@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+.build/
+DerivedData/
+*.o
+*.swiftmodule
+*.swiftdoc
+*.dSYM/
+*.xcuserstate
+
+# Signing material (never commit local identity)
+*.p12
+*.keychain-db

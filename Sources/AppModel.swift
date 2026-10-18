@@ -1,0 +1,1407 @@
+import AppKit
+import SwiftUI
+
+@MainActor
+final class AppModel: ObservableObject {
+    static let shared = AppModel()
+
+    private static let panelCloseSuppressInterval: TimeInterval = 0.35
+    private static let dragIgnoreInterval: TimeInterval = 0.3
+    private static let edgeNudgeDelay: TimeInterval = 0.28
+    private static let edgeTurnDelay: TimeInterval = 0.55
+    private static let edgeDragThreshold: CGFloat = 70
+    private static let gapSettleDelay: TimeInterval = 0.07
+    private static let hotCornerInset: CGFloat = 6
+    private static let hotCornerActivationDelay: TimeInterval = 0.12
+
+    @Published var settings: Preferences {
+        didSet {
+            guard ready, settings != oldValue else { return }
+            persist()
+            if settings.f4Enabled != oldValue.f4Enabled
+                || settings.hotKeyCode != oldValue.hotKeyCode
+                || settings.hotKeyModifiers != oldValue.hotKeyModifiers {
+                notice = registerHotKey()
+            }
+            if settings.hotCorner != oldValue.hotCorner {
+                CornerMonitor.shared.apply(settings.hotCorner)
+            }
+            if settings.pinchThree != oldValue.pinchThree || settings.pinchFour != oldValue.pinchFour {
+                PinchMonitor.shared.apply(counts: settings.pinchCounts)
+            }
+            if settings.showMenuBar != oldValue.showMenuBar {
+                AppDelegate.current?.refreshTray()
+            }
+            if settings.showDockIcon != oldValue.showDockIcon {
+                let policy: NSApplication.ActivationPolicy = settings.showDockIcon ? .regular : .accessory
+                NSApp.setActivationPolicy(policy)
+            }
+            if settings.launchAtLogin != oldValue.launchAtLogin {
+                applyLaunchAtLogin()
+            }
+            if isOpen, settings.hideDockWhileOpen != oldValue.hideDockWhileOpen {
+                onOpenChange?()
+            }
+            let layoutChanged = settings.browsing != oldValue.browsing
+                || settings.columns != oldValue.columns
+                || settings.rows != oldValue.rows
+                || settings.showOn != oldValue.showOn
+            if isOpen && layoutChanged {
+                onOpenChange?()
+            }
+        }
+    }
+    @Published var apps: [AppItem] {
+        didSet { rebuildIndexes() }
+    }
+    @Published var folders: [FolderItem] {
+        didSet { rebuildIndexes() }
+    }
+    @Published var pages: [Page]
+    @Published var currentPage: Int
+    @Published var pageDirection: Int = 1
+    @Published var isOpen = false
+    /// 每次打开时递增：把图标复位成「还没出场」的隐藏状态（无动画）。
+    /// 它会在面板仍不可见时提交，之后 beginEntrance 才真正播放出场动画。
+    @Published var entranceReset = 0
+    /// 每次打开时递增：驱动图标从中心向外弹出来的出场动画。
+    /// 和 entranceReset 分开，是为了让「先隐藏、后动画」能分两次提交。
+    @Published var bloomID = 0
+    @Published var query = ""
+    @Published var selection: Set<String> = []
+    @Published var openFolderID: UUID?
+    @Published var isScanning = false
+    @Published var notice: String?
+    @Published var draggingID: String?
+    @Published var folderHoverID: String?
+    @Published var folderNameEditing = false
+    @Published var isOptionPressed = false {
+        didSet {
+            guard isOptionPressed != oldValue else { return }
+            jiggleTimer?.invalidate()
+            jiggleTimer = nil
+            if isOptionPressed {
+                let timer = Timer(timeInterval: 0.09, repeats: true) { [weak self] _ in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if !NSEvent.modifierFlags.contains(.option) || !self.isOpen {
+                            self.isOptionPressed = false
+                            return
+                        }
+                        self.jiggleTick &+= 1
+                    }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                jiggleTimer = timer
+            } else {
+                jiggleTick = 0
+            }
+        }
+    }
+    @Published var jiggleTick = 0
+    private var jiggleTimer: Timer?
+    @Published var swipeOffset: CGFloat = 0
+    @Published var swiping = false
+    @Published var iconRevision = 0
+    private(set) var libraryRevision = 0
+
+    var onOpenChange: (() -> Void)?
+    /// 每次扫描完成后触发（含「无变化」的早退），用于预热面板渲染。
+    var onContentReady: (() -> Void)?
+    /// 面板淡入/淡出期间为 false：此时不响应 hover，避免和窗口动画抢帧。
+    /// 刻意不做 @Published——它只影响事件处理，不应该触发整棵视图树重算。
+    var interactionReady = true
+    private var ignorePointerUntil = Date.distantPast
+    private var suppressPanelCloseUntil = Date.distantPast
+    private var edgeTimer: Timer?
+    private var pendingHoverID: String?
+    private var hoverMark: Date?
+    private var lastShiftedOnto: String?
+    private var lastDragX: CGFloat?
+    private var lastDragY: CGFloat?
+    private var dragDirty = false
+    private var orderAtDragStart: [Slot] = []
+    private var previewIndex: Int?
+    private var lastEdgeTurn = Date.distantPast
+    private var edgeArmed: Date?
+    private var slotFrames: [String: CGRect] = [:]
+    private var dragPanel: NSPanel?
+    private var dragMonitor: Any?
+    private var pendingGap: Int?
+    private var pendingGapMark: Date?
+    private var ready = false
+    private var iconCache: [String: NSImage] = [:]
+    private var iconPrefetchTask: Task<Void, Never>?
+    private var iconPrefetchGeneration = 0
+    private let fileURL: URL
+    private let persistQueue = DispatchQueue(label: "app.local.pinchpad.persist", qos: .utility)
+    private var appsByID: [String: AppItem] = [:]
+    private var foldersByID: [UUID: FolderItem] = [:]
+
+    private init() {
+        let appSupport = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+        let directory = appSupport.appendingPathComponent("Pinchpad")
+        let legacy = appSupport.appendingPathComponent("Gepan")
+        if let stale = try? FileManager.default.contentsOfDirectory(atPath: legacy.path) {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for name in stale {
+                let destination = directory.appendingPathComponent(name)
+                if !FileManager.default.fileExists(atPath: destination.path) {
+                    try? FileManager.default.moveItem(at: legacy.appendingPathComponent(name), to: destination)
+                }
+            }
+            try? FileManager.default.removeItem(at: legacy)
+        }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        fileURL = directory.appendingPathComponent("library.json")
+        if let data = try? Data(contentsOf: fileURL),
+           let snapshot = try? JSONDecoder().decode(LibrarySnapshot.self, from: data) {
+            settings = snapshot.settings
+            apps = snapshot.apps
+            folders = snapshot.folders
+            pages = snapshot.pages.isEmpty ? [Page()] : snapshot.pages
+            currentPage = snapshot.currentPage
+        } else {
+            settings = Preferences()
+            apps = []
+            folders = []
+            pages = [Page()]
+            currentPage = 0
+        }
+        rebuildIndexes()
+        ready = true
+        wireMonitors()
+        if apps.isEmpty { rescan() }
+        prefetchIcons()
+    }
+
+    func icon(for app: AppItem) -> NSImage {
+        if let cached = iconCache[app.id] { return cached }
+        let image = NSWorkspace.shared.icon(forFile: app.path)
+        image.size = NSSize(width: 128, height: 128)
+        iconCache[app.id] = image
+        return image
+    }
+
+    private func prefetchIcons() {
+        iconPrefetchTask?.cancel()
+        iconPrefetchGeneration += 1
+        let generation = iconPrefetchGeneration
+        let missing = apps.filter { iconCache[$0.id] == nil }
+        guard !missing.isEmpty else {
+            iconPrefetchTask = nil
+            return
+        }
+        iconPrefetchTask = Task.detached(priority: .utility) {
+            var loaded: [(id: String, path: String, image: NSImage)] = []
+            for app in missing {
+                guard !Task.isCancelled else { return }
+                let image = NSWorkspace.shared.icon(forFile: app.path)
+                image.size = NSSize(width: 128, height: 128)
+                // NSImage 的位图是惰性解码的；这里预解出 CGImage 缓存进 rep，
+                // 否则第一次打开时几十张图标会在主线程同步解码。
+                var proposed = NSRect(origin: .zero, size: image.size)
+                _ = image.cgImage(forProposedRect: &proposed, context: nil, hints: nil)
+                loaded.append((app.id, app.path, image))
+            }
+            guard !Task.isCancelled else { return }
+            let images = loaded
+            await MainActor.run {
+                let model = AppModel.shared
+                guard model.iconPrefetchGeneration == generation else { return }
+                var added = false
+                for item in images where model.appsByID[item.id]?.path == item.path && model.iconCache[item.id] == nil {
+                    model.iconCache[item.id] = item.image
+                    added = true
+                }
+                model.iconPrefetchTask = nil
+                if added { model.iconRevision += 1 }
+            }
+        }
+    }
+
+    func app(_ id: String) -> AppItem? { appsByID[id] }
+    func folder(_ id: UUID) -> FolderItem? { foldersByID[id] }
+
+    private func rebuildIndexes() {
+        appsByID = Dictionary(apps.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        foldersByID = Dictionary(folders.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        libraryRevision += 1
+    }
+
+    var openFolder: FolderItem? {
+        guard let openFolderID else { return nil }
+        return folder(openFolderID)
+    }
+
+    func slots(on page: Int) -> [Slot] {
+        guard pages.indices.contains(page) else { return [] }
+        return pages[page].slots.filter(isVisible)
+    }
+
+    var visibleSlots: [Slot] {
+        if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+            return searchSlots()
+        }
+        if settings.browsing == .scroll {
+            return pages.flatMap(\.slots).filter(isVisible)
+        }
+        let index = clampedPage
+        return pages[index].slots.filter(isVisible)
+    }
+
+    var clampedPage: Int {
+        min(max(0, currentPage), max(0, pages.count - 1))
+    }
+
+    func toggle() {
+        if isOpen { close() } else { open() }
+    }
+
+    func openFromPinch() {
+        if !isOpen { open() }
+    }
+
+    private var pointerGuarded: Bool {
+        Date() < ignorePointerUntil || Date() < PinchMonitor.shared.pinchPointerGuardUntil()
+    }
+
+    func closeFromPointer() {
+        guard !pointerGuarded else { return }
+        close()
+    }
+
+    func open() {
+        // 已经打开时（Dock 图标被再点一次、open -a 等）不要再走一遍打开流程：
+        // 否则会把图标复位成隐藏态却不播动画，面板会变成空的。
+        guard !isOpen else { return }
+        // 先把图标状态复位成隐藏（无动画），面板此时仍是不可见的预热态，
+        // 这次提交不会被人看到；下一次提交才是真正的出场动画。
+        prepareEntrance()
+        // 只有在应用未激活时才激活；重复 open 时把省下的激活等待让给淡入。
+        if !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        if settings.returnToFirstPage, currentPage != 0 {
+            currentPage = 0
+        }
+        // 下面这些在 completeClose 里都已经清空；只有真的非空才发布，避免隐藏态整树重绘。
+        if !query.isEmpty { query = "" }
+        if !selection.isEmpty { selection = [] }
+        if openFolderID != nil { openFolderID = nil }
+        if folderNameEditing { folderNameEditing = false }
+        isOpen = true
+        onOpenChange?()
+    }
+
+    /// 复位入场状态（图标瞬间回到「未出场」的隐藏态）。只在面板不可见时调用。
+    func prepareEntrance() {
+        entranceReset &+= 1
+    }
+
+    /// 由 AppDelegate 在面板开始浮现时调用：图标从中心向外一轮一轮弹出来，
+    /// 这段动画就是内容的「出场」本身，而不是内容全显示完之后的补间。
+    func beginEntrance() {
+        bloomID &+= 1
+    }
+
+    func close() {
+        guard isOpen else { return }
+        // 拖拽中关面板（Esc / 点外部 / 捏合）时，否则 60Hz 的 edgeTimer 和
+        // 拖拽浮窗会一直留在隐藏态。
+        if draggingID != nil {
+            endDrag()
+        }
+        swipeOffset = 0
+        swiping = false
+        isOpen = false
+        onOpenChange?()
+    }
+
+    func completeClose() {
+        guard !isOpen else { return }
+        // 同样只在真正有值时才发布：隐藏面板不需要为四个空值再整树重绘一次。
+        if openFolderID != nil { openFolderID = nil }
+        if folderNameEditing { folderNameEditing = false }
+        if !selection.isEmpty { selection = [] }
+        if !query.isEmpty { query = "" }
+    }
+
+    func closeTop() {
+        if folderNameEditing {
+            folderNameEditing = false
+            suppressPanelCloseUntil = Date().addingTimeInterval(Self.panelCloseSuppressInterval)
+            return
+        }
+        if openFolderID != nil {
+            folderNameEditing = false
+            openFolderID = nil
+            suppressPanelCloseUntil = Date().addingTimeInterval(Self.panelCloseSuppressInterval)
+            return
+        }
+        if Date() < suppressPanelCloseUntil { return }
+        if !query.isEmpty {
+            query = ""
+            return
+        }
+        close()
+    }
+
+    func turnPage(_ delta: Int) {
+        guard query.isEmpty, settings.browsing != .scroll, openFolderID == nil else { return }
+        let next = min(max(0, clampedPage + delta), max(0, pages.count - 1))
+        guard next != clampedPage else { return }
+        pageDirection = next > clampedPage ? 1 : -1
+        currentPage = next
+        if draggingID == nil { persist() }
+    }
+
+    func showPage(_ index: Int) {
+        let next = min(max(0, index), max(0, pages.count - 1))
+        guard next != clampedPage else { return }
+        pageDirection = next > clampedPage ? 1 : -1
+        currentPage = next
+        persist()
+    }
+
+    var hotKeyLabel: String {
+        HotKeyCenter.title(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers)
+    }
+
+    func registerHotKey() -> String? {
+        HotKeyCenter.shared.apply(
+            enabled: settings.f4Enabled,
+            keyCode: settings.hotKeyCode,
+            modifiers: settings.hotKeyModifiers
+        )
+    }
+
+    func targetScreen() -> NSScreen? {
+        switch settings.showOn {
+        case .main:
+            return NSScreen.screens.first
+        case .cursor:
+            let point = NSEvent.mouseLocation
+            return NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
+        case .active:
+            return NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        }
+    }
+
+    func windowSize(for screen: NSScreen) -> NSSize {
+        let cell: CGFloat = 104
+        let width = CGFloat(settings.columns) * cell + 96
+        let height = CGFloat(settings.rows) * cell + 150
+        return NSSize(
+            width: min(width, screen.visibleFrame.width - 80),
+            height: min(height, screen.visibleFrame.height - 80)
+        )
+    }
+
+    func rescan() {
+        isScanning = true
+        let paths = settings.sources.filter(\.enabled).map(\.path)
+        Task.detached {
+            let found = AppScanner.scan(paths: paths)
+            await MainActor.run { AppModel.shared.merge(found) }
+        }
+    }
+
+    func launch(_ app: AppItem) {
+        let url = URL(fileURLWithPath: app.path)
+        if let index = apps.firstIndex(where: { $0.id == app.id }) {
+            apps[index].lastOpenedAt = Date()
+            persist()
+        }
+        NSWorkspace.shared.open(url)
+        close()
+    }
+
+    func activate(_ slot: Slot) {
+        guard !pointerGuarded else { return }
+        if case .app(let id) = slot,
+           settings.optionClickUninstall,
+           NSEvent.modifierFlags.contains(.option),
+           let app = app(id) {
+            promptUninstall(app)
+            return
+        }
+        switch slot {
+        case .app(let id):
+            guard let app = app(id) else { return }
+            launch(app)
+        case .folder(let id):
+            openFolderID = id
+            selection = []
+        }
+    }
+
+    func toggleSelect(_ slot: Slot) {
+        if selection.contains(slot.id) {
+            selection.remove(slot.id)
+        } else {
+            selection.insert(slot.id)
+        }
+    }
+
+    func move(_ sourceID: String, onto targetID: String) {
+        guard sourceID != targetID, query.isEmpty else { return }
+        guard let from = flatIndex(of: sourceID), let to = flatIndex(of: targetID), from != to else { return }
+        adoptCustomOrder()
+        guard let source = removeSlot(sourceID) else { return }
+        if from < to {
+            insert(source, after: targetID)
+        } else {
+            insert(source, before: targetID)
+        }
+        persist()
+    }
+
+    func noteSlotFrames(_ frames: [String: CGRect]) {
+        slotFrames = frames
+    }
+
+    func beginDrag(_ id: String) {
+        guard draggingID == nil, query.isEmpty, openFolderID == nil else { return }
+        adoptCustomOrder()
+        draggingID = id
+        folderHoverID = nil
+        pendingHoverID = nil
+        hoverMark = nil
+        lastShiftedOnto = nil
+        lastDragX = nil
+        lastDragY = nil
+        edgeArmed = nil
+        dragDirty = false
+        orderAtDragStart = pages.flatMap(\.slots)
+        previewIndex = nil
+        pendingGap = nil
+        pendingGapMark = nil
+        showDragImage(for: id)
+        edgeTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trackPointerDrag() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        edgeTimer = timer
+        if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged]) { [weak self] event in
+            MainActor.assumeIsolated { self?.trackPointerDrag() }
+            return event
+        }
+    }
+
+    func scheduleEndDrag() {
+        endDrag()
+    }
+
+    func endDrag() {
+        guard draggingID != nil else { return }
+        let source = draggingID
+        let folderTarget = folderHoverID
+        let dirty = dragDirty
+        draggingID = nil
+        folderHoverID = nil
+        pendingHoverID = nil
+        hoverMark = nil
+        lastShiftedOnto = nil
+        lastDragX = nil
+        lastDragY = nil
+        dragDirty = false
+        pendingGap = nil
+        pendingGapMark = nil
+        edgeTimer?.invalidate()
+        edgeTimer = nil
+        if let dragMonitor { NSEvent.removeMonitor(dragMonitor) }
+        dragMonitor = nil
+        hideDragImage()
+        ignorePointerUntil = Date().addingTimeInterval(Self.dragIgnoreInterval)
+        if let source, let folderTarget, folderTarget != source {
+            writeBack(orderAtDragStart)
+            absorb(source, into: folderTarget)
+        } else if dirty {
+            reflow()
+            persist()
+        }
+    }
+
+    func rename(_ slot: Slot) {
+        let current: String
+        switch slot {
+        case .app(let id): current = app(id)?.effectiveName ?? ""
+        case .folder(let id): current = folder(id)?.name ?? ""
+        }
+        guard let next = promptText("重命名", value: current), !next.isEmpty else { return }
+        switch slot {
+        case .app(let id):
+            guard let index = apps.firstIndex(where: { $0.id == id }) else { return }
+            apps[index].customName = next
+        case .folder(let id):
+            guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+            folders[index].name = next
+        }
+        persist()
+    }
+
+    func renameFolder(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        folderNameEditing = false
+        guard !trimmed.isEmpty, let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[index].name = trimmed
+        persist()
+    }
+
+    func hide(_ slot: Slot) {
+        switch slot {
+        case .app(let id):
+            guard let index = apps.firstIndex(where: { $0.id == id }) else { return }
+            apps[index].hidden = true
+        case .folder:
+            return
+        }
+        selection = []
+        persist()
+    }
+
+    func unhide(_ id: String) {
+        guard let index = apps.firstIndex(where: { $0.id == id }) else { return }
+        apps[index].hidden = false
+        persist()
+    }
+
+    func reveal(_ app: AppItem) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.path)])
+    }
+
+    func makeFolder(from slots: [Slot]) {
+        let ids = slots.compactMap { slot -> String? in
+            if case .app(let id) = slot { return id }
+            return nil
+        }
+        guard !ids.isEmpty else { return }
+        let folder = FolderItem(id: UUID(), name: nextFolderName(), appIDs: ids, createdAt: Date())
+        folders.append(folder)
+        rebuildIndexes()
+        for id in ids { _ = removeSlot("a:\(id)") }
+        let placed = Slot.folder(folder.id)
+        if pages.isEmpty { pages = [Page()] }
+        if pages[pages.count - 1].slots.count >= settings.pageCapacity {
+            pages.append(Page(slots: [placed]))
+        } else {
+            pages[pages.count - 1].slots.append(placed)
+        }
+        selection = []
+        persist()
+    }
+
+    func ungroup(_ id: UUID) {
+        guard let folder = folder(id) else { return }
+        guard let pageIndex = pages.firstIndex(where: { $0.slots.contains(.folder(id)) }),
+              let slotIndex = pages[pageIndex].slots.firstIndex(of: .folder(id)) else { return }
+        pages[pageIndex].slots.remove(at: slotIndex)
+        var insertAt = slotIndex
+        for appID in folder.appIDs where apps.contains(where: { $0.id == appID }) {
+            pages[pageIndex].slots.insert(.app(appID), at: min(insertAt, pages[pageIndex].slots.count))
+            insertAt += 1
+        }
+        reflow()
+        folders.removeAll { $0.id == id }
+        rebuildIndexes()
+        if openFolderID == id { openFolderID = nil }
+        persist()
+    }
+
+    func canUninstall(_ app: AppItem) -> Bool {
+        app.bundleID != Bundle.main.bundleIdentifier && !app.path.hasPrefix("/System")
+    }
+
+    func promptUninstall(_ app: AppItem) {
+        if app.bundleID == Bundle.main.bundleIdentifier { 
+            notice = "不能移除正在运行的 Pinchpad。"
+            return
+        }
+        if app.path.hasPrefix("/System") {
+            notice = "系统应用留在原地，Pinchpad 不会移除它。"
+            return
+        }
+        let alias = RelatedFiles.isAlias(app.path)
+        let related = alias ? [] : RelatedFiles.candidates(for: app)
+        let alert = NSAlert()
+        alert.messageText = alias ? "移除替身？" : "把「\(app.effectiveName)」移到废纸篓？"
+        if related.isEmpty {
+            alert.informativeText = alias
+                ? "只会移除替身，原应用还在。"
+                : "应用包会移到废纸篓。没有发现同名的支持文件。"
+        } else {
+            let lines = related.prefix(12).map(\.path).joined(separator: "\n")
+            alert.informativeText = "同时把这些相关文件移到废纸篓：\n\(lines)"
+            if related.count > 12 {
+                alert.informativeText += "\n以及另外 \(related.count - 12) 项"
+            }
+        }
+        alert.addButton(withTitle: "移到废纸篓")
+        alert.addButton(withTitle: "取消")
+        guard runOverPanel(alert) == .alertFirstButtonReturn else { return }
+        var urls = [URL(fileURLWithPath: app.path)]
+        urls.append(contentsOf: related)
+        do {
+            try Trash.move(urls)
+            removeAppCompletely(app.id)
+            notice = "已移到废纸篓。"
+        } catch {
+            notice = "没能移走：\(error.localizedDescription)"
+        }
+    }
+
+    func pinToDock(_ app: AppItem) {
+        let alert = NSAlert()
+        alert.messageText = "固定到 Dock？"
+        alert.informativeText = "这会改写 Dock 的列表并重新启动 Dock。"
+        alert.addButton(withTitle: "固定")
+        alert.addButton(withTitle: "取消")
+        guard runOverPanel(alert) == .alertFirstButtonReturn else { return }
+        do {
+            try DockPin.add(app: app)
+            notice = "已固定到 Dock。"
+        } catch {
+            notice = "没能固定：\(error.localizedDescription)"
+        }
+    }
+
+    func reorganizeNow() {
+        let options = settings.reorganize
+        var pool: [Slot]
+        if options.allPages {
+            pool = pages.flatMap(\.slots)
+        } else {
+            pool = pages[clampedPage].slots
+        }
+        pool = pool.filter(isVisible)
+        if options.sortInsideFolders {
+            for index in folders.indices {
+                folders[index].appIDs = sortAppIDs(folders[index].appIDs, by: options.sortBy, ascending: options.ascending)
+            }
+        }
+        let ranked = pool.sorted { lhs, rhs in
+            rankedLess(lhs, rhs, options: options)
+        }
+        if options.allPages {
+            pages = paginate(ranked)
+            currentPage = 0
+        } else {
+            pages[clampedPage].slots = ranked
+        }
+        settings.sortBy = .custom
+        persist()
+    }
+
+    func importSystemLayout() {
+        switch SystemLayoutImport.load() {
+        case .failure(let error):
+            notice = error.message
+        case .success(let layout):
+            var used = Set<String>()
+            var newFolders: [FolderItem] = []
+            var slots: [Slot] = []
+            for entry in layout.folders {
+                let ids = entry.bundleIDs.compactMap { bundle in
+                    apps.first { $0.bundleID == bundle }?.id
+                }
+                guard !ids.isEmpty else { continue }
+                let folder = FolderItem(id: UUID(), name: entry.name, appIDs: ids, createdAt: Date())
+                newFolders.append(folder)
+                slots.append(.folder(folder.id))
+                used.formUnion(ids)
+            }
+            for bundle in layout.looseBundleIDs {
+                guard let id = apps.first(where: { $0.bundleID == bundle })?.id, !used.contains(id) else { continue }
+                slots.append(.app(id))
+                used.insert(id)
+            }
+            for app in apps where !app.hidden && !used.contains(app.id) {
+                slots.append(.app(app.id))
+            }
+            folders = newFolders
+            pages = paginate(slots)
+            currentPage = 0
+            persist()
+            notice = "已按系统应用的顺序重新摆放能对应上的应用。"
+        }
+    }
+
+    func addSource() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.prompt = "添加"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.sources.append(AppSource(id: UUID(), path: url.path, enabled: true, custom: true))
+        rescan()
+    }
+
+    func removeSource(_ id: UUID) {
+        settings.sources.removeAll { $0.id == id && $0.custom }
+        rescan()
+    }
+
+    func setGrid(columns: Int, rows: Int) {
+        settings.columns = columns
+        settings.rows = rows
+        reflow()
+        persist()
+    }
+
+    private func merge(_ found: [AppScanner.Found]) {
+        let existingByID = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
+        var next: [AppItem] = []
+        var seen = Set<String>()
+        for item in found {
+            let id = item.bundleID ?? item.path
+            guard seen.insert(id).inserted else { continue }
+            if var old = existingByID[id] {
+                old.path = item.path
+                old.name = item.name
+                old.bundleID = item.bundleID
+                old.sourcePath = item.sourcePath
+                next.append(old)
+            } else {
+                next.append(AppItem(
+                    id: id, path: item.path, bundleID: item.bundleID, name: item.name,
+                    customName: nil, hidden: false, addedAt: Date(), lastOpenedAt: nil,
+                    sourcePath: item.sourcePath
+                ))
+            }
+        }
+        guard next != apps else {
+            isScanning = false
+            prefetchIcons()
+            onContentReady?()
+            return
+        }
+        let kept = Set(next.map(\.id))
+        let nextPaths = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0.path) })
+        iconCache = iconCache.filter { id, _ in
+            guard let path = nextPaths[id] else { return false }
+            return path == existingByID[id]?.path
+        }
+        apps = next
+        let updatedFolders = folders.compactMap { folder -> FolderItem? in
+            var copy = folder
+            copy.appIDs = folder.appIDs.filter { kept.contains($0) }
+            return copy.appIDs.isEmpty ? nil : copy
+        }
+        if updatedFolders != folders { folders = updatedFolders }
+        let folderIDs = Set(folders.map(\.id))
+        for index in pages.indices {
+            pages[index].slots.removeAll { slot in
+                switch slot {
+                case .app(let id): return !kept.contains(id)
+                case .folder(let id): return !folderIDs.contains(id)
+                }
+            }
+        }
+        let placed = Set(pages.flatMap(\.slots).compactMap { slot -> String? in
+            if case .app(let id) = slot { return id }
+            return nil
+        })
+        let inFolders = Set(folders.flatMap(\.appIDs))
+        for app in apps where !app.hidden && !placed.contains(app.id) && !inFolders.contains(app.id) {
+            append(.app(app.id))
+        }
+        if pages.isEmpty { pages = [Page()] }
+        reflow()
+        currentPage = min(currentPage, pages.count - 1)
+        isScanning = false
+        prefetchIcons()
+        persist()
+        onContentReady?()
+    }
+
+    private func searchSlots() -> [Slot] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchedApps = apps.filter { app in
+            if app.hidden && !settings.showHiddenInSearch { return false }
+            return app.effectiveName.localizedCaseInsensitiveContains(needle)
+                || (app.bundleID?.localizedCaseInsensitiveContains(needle) ?? false)
+        }.map { Slot.app($0.id) }
+        let matchedFolders = folders.filter { $0.name.localizedCaseInsensitiveContains(needle) }.map { Slot.folder($0.id) }
+        return matchedFolders + matchedApps
+    }
+
+    private func isVisible(_ slot: Slot) -> Bool {
+        switch slot {
+        case .app(let id):
+            guard let app = app(id) else { return false }
+            return !app.hidden
+        case .folder(let id):
+            return folder(id)?.appIDs.isEmpty == false
+        }
+    }
+
+    private func append(_ slot: Slot) {
+        if pages.isEmpty { pages = [Page()] }
+        if pages[pages.count - 1].slots.count >= settings.pageCapacity {
+            pages.append(Page(slots: [slot]))
+        } else {
+            pages[pages.count - 1].slots.append(slot)
+        }
+    }
+
+    private func reflow() {
+        let slots = pages.flatMap(\.slots)
+        let oldIDs = pages.map(\.id)
+        var result = paginate(slots)
+        for index in result.indices where index < oldIDs.count {
+            result[index].id = oldIDs[index]
+        }
+        pages = result
+    }
+
+    private func paginate(_ slots: [Slot]) -> [Page] {
+        let capacity = settings.pageCapacity
+        if slots.isEmpty { return [Page()] }
+        var result: [Page] = []
+        var buffer: [Slot] = []
+        for slot in slots {
+            buffer.append(slot)
+            if buffer.count == capacity {
+                result.append(Page(slots: buffer))
+                buffer = []
+            }
+        }
+        if !buffer.isEmpty { result.append(Page(slots: buffer)) }
+        return result.isEmpty ? [Page()] : result
+    }
+
+    private func removeSlot(_ id: String) -> Slot? {
+        for pageIndex in pages.indices {
+            if let slotIndex = pages[pageIndex].slots.firstIndex(where: { $0.id == id }) {
+                return pages[pageIndex].slots.remove(at: slotIndex)
+            }
+        }
+        return nil
+    }
+
+    private func trackPointerDrag() {
+        guard isOpen, let id = draggingID else { return }
+        if NSEvent.pressedMouseButtons & 1 == 0 {
+            endDrag()
+            return
+        }
+        moveDragImage()
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.title == "Pinchpad" }),
+              let content = window.contentView else { return }
+        let local = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let point = CGPoint(x: local.x, y: content.bounds.height - local.y)
+        let width = content.bounds.width
+        if point.x < Self.edgeDragThreshold {
+            nudgeDragEdge(-1)
+            return
+        }
+        if point.x > width - Self.edgeDragThreshold {
+            nudgeDragEdge(1)
+            return
+        }
+        edgeArmed = nil
+        if let icon = iconUnderPointer(point), icon != id {
+            if folderHoverID != icon { folderHoverID = icon }
+            previewIndex = nil
+            pendingGap = nil
+            if dragDirty {
+                writeBack(orderAtDragStart)
+                dragDirty = false
+            }
+            return
+        }
+        if folderHoverID != nil { folderHoverID = nil }
+        guard let destination = gapInsertionIndex(at: point, dragging: id) else { return }
+        guard destination != previewIndex else {
+            pendingGap = nil
+            return
+        }
+        let now = Date()
+        if destination != pendingGap {
+            pendingGap = destination
+            pendingGapMark = now
+            return
+        }
+        guard let mark = pendingGapMark, now.timeIntervalSince(mark) >= Self.gapSettleDelay else { return }
+        pendingGap = nil
+        previewIndex = destination
+        previewGap(id, at: destination)
+    }
+
+    private func nudgeDragEdge(_ delta: Int) {
+        if edgeArmed == nil {
+            edgeArmed = Date()
+            return
+        }
+        guard let armed = edgeArmed, Date().timeIntervalSince(armed) > Self.edgeNudgeDelay else { return }
+        guard Date().timeIntervalSince(lastEdgeTurn) > Self.edgeTurnDelay else { return }
+        guard let id = draggingID else { return }
+        let before = clampedPage
+        turnPage(delta)
+        guard clampedPage != before else { return }
+        lastEdgeTurn = Date()
+        edgeArmed = Date()
+        let capacity = max(1, settings.pageCapacity)
+        let destination = delta > 0
+            ? clampedPage * capacity
+            : min(max(0, flatSlotCount() - 1), (clampedPage + 1) * capacity - 1)
+        moveDuringDrag(id, toFlatIndex: destination)
+    }
+
+    private func iconUnderPointer(_ point: CGPoint) -> String? {
+        var best: (String, CGFloat)?
+        for (id, frame) in slotFrames where id != draggingID && frame.contains(point) {
+            let distance = hypot(frame.midX - point.x, frame.midY - point.y)
+            if best == nil || distance < best!.1 { best = (id, distance) }
+        }
+        return best?.0
+    }
+
+    private func gapInsertionIndex(at point: CGPoint, dragging id: String) -> Int? {
+        guard pages.indices.contains(clampedPage) else { return nil }
+        let icons = pages[clampedPage].slots.filter { isVisible($0) && $0.id != id }.compactMap { slot -> (String, CGRect)? in
+            guard let frame = slotFrames[slot.id] else { return nil }
+            return (slot.id, frame)
+        }
+        guard !icons.isEmpty else { return nil }
+        let sorted = icons.sorted { lhs, rhs in
+            abs(lhs.1.midY - rhs.1.midY) > 8 ? lhs.1.midY < rhs.1.midY : lhs.1.minX < rhs.1.minX
+        }
+        var rows: [[(String, CGRect)]] = []
+        for item in sorted {
+            if let last = rows.last?.last, abs(item.1.midY - last.1.midY) < 8 {
+                rows[rows.count - 1].append(item)
+            } else {
+                rows.append([item])
+            }
+        }
+        for row in rows {
+            let top = row.map(\.1.minY).min() ?? 0
+            let bottom = row.map(\.1.maxY).max() ?? 0
+            guard point.y >= top, point.y <= bottom else { continue }
+            let line = row.sorted { $0.1.minX < $1.1.minX }
+            if point.x < line[0].1.minX {
+                return orderAtDragStart.firstIndex { $0.id == line[0].0 }
+            }
+            for index in 0..<(line.count - 1) {
+                let left = line[index].1
+                let right = line[index + 1].1
+                if point.x >= left.maxX, point.x <= right.minX {
+                    return orderAtDragStart.firstIndex { $0.id == line[index + 1].0 }
+                }
+            }
+            if point.x > line[line.count - 1].1.maxX, let index = orderAtDragStart.firstIndex(where: { $0.id == line[line.count - 1].0 }) {
+                return index + 1
+            }
+        }
+        return nil
+    }
+
+    private func previewGap(_ id: String, at destination: Int) {
+        var all = orderAtDragStart
+        guard let from = all.firstIndex(where: { $0.id == id }) else { return }
+        let item = all.remove(at: from)
+        var index = destination
+        if from < destination { index -= 1 }
+        index = min(max(0, index), all.count)
+        all.insert(item, at: index)
+        writeBack(all)
+        dragDirty = true
+    }
+
+    private func insertionFlatIndex(at point: CGPoint, dragging id: String) -> Int? {
+        let columns = max(settings.columns, 1)
+        let page = clampedPage
+        guard pages.indices.contains(page) else { return nil }
+        let frames = pages[page].slots.filter(isVisible).compactMap { slotFrames[$0.id] }
+        guard let pitch = gridPitch(frames) else { return nil }
+        let col = min(max(Int(round((point.x - pitch.originX) / pitch.x)), 0), columns - 1)
+        let row = min(max(Int(round((point.y - pitch.originY) / pitch.y)), 0), max(settings.rows, 1) - 1)
+        let pageStart = pages.prefix(page).reduce(0) { $0 + $1.slots.filter(isVisible).count }
+        let visibleIndex = min(pageStart + row * columns + col, visibleSlotCount())
+        return flatIndex(forVisible: visibleIndex)
+    }
+
+    private func gridPitch(_ frames: [CGRect]) -> (originX: CGFloat, originY: CGFloat, x: CGFloat, y: CGFloat)? {
+        guard let sample = frames.min(by: { lhs, rhs in
+            lhs.minY == rhs.minY ? lhs.minX < rhs.minX : lhs.minY < rhs.minY
+        }) else { return nil }
+        let xs = Array(Set(frames.map { $0.midX.rounded() })).sorted()
+        let ys = Array(Set(frames.map { $0.midY.rounded() })).sorted()
+        let pitchX = xs.count >= 2 ? xs[1] - xs[0] : sample.width + 36
+        let pitchY = ys.count >= 2 ? ys[1] - ys[0] : sample.height + 12
+        return (xs.first ?? sample.midX, ys.first ?? sample.midY, max(pitchX, 1), max(pitchY, 1))
+    }
+
+    private func visibleSlotCount() -> Int {
+        pages.reduce(0) { $0 + $1.slots.filter(isVisible).count }
+    }
+
+    private func flatIndex(forVisible visibleIndex: Int) -> Int {
+        var seen = 0
+        var flat = 0
+        for page in pages {
+            for slot in page.slots {
+                if isVisible(slot) {
+                    if seen == visibleIndex { return flat }
+                    seen += 1
+                }
+                flat += 1
+            }
+        }
+        return flat
+    }
+
+    private func moveDuringDrag(_ id: String, toFlatIndex destination: Int) {
+        guard let from = flatIndex(of: id) else { return }
+        var all = pages.flatMap(\.slots)
+        guard all.indices.contains(from) else { return }
+        let item = all.remove(at: from)
+        let index = min(max(0, destination), all.count)
+        all.insert(item, at: index)
+        guard index != from else { return }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.84)) {
+            writeBack(all)
+        }
+        dragDirty = true
+    }
+
+    private func flatSlotCount() -> Int {
+        pages.reduce(0) { $0 + $1.slots.count }
+    }
+
+    private func writeBack(_ slots: [Slot]) {
+        let capacity = max(1, settings.pageCapacity)
+        var chunks: [[Slot]] = []
+        var buffer: [Slot] = []
+        for slot in slots {
+            buffer.append(slot)
+            if buffer.count == capacity {
+                chunks.append(buffer)
+                buffer = []
+            }
+        }
+        if !buffer.isEmpty { chunks.append(buffer) }
+        if chunks.isEmpty { chunks = [[]] }
+        while pages.count < chunks.count { pages.append(Page()) }
+        if pages.count > chunks.count {
+            pages.removeLast(pages.count - chunks.count)
+        }
+        for index in pages.indices where pages[index].slots != chunks[index] {
+            pages[index].slots = chunks[index]
+        }
+    }
+
+    private func showDragImage(for id: String) {
+        let image: NSImage
+        if case .app(let appID) = slot(id), let app = app(appID) {
+            image = icon(for: app)
+        } else {
+            image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: nil) ?? NSImage()
+        }
+        let side = max(slotFrames[id]?.width ?? 108, 72)
+        let panel = dragPanel ?? makeDragPanel()
+        dragPanel = panel
+        let view = panel.contentView as? NSImageView
+        view?.image = image
+        let location = NSEvent.mouseLocation
+        panel.setFrame(NSRect(x: location.x - side / 2, y: location.y - side / 2, width: side, height: side), display: false)
+        panel.orderFrontRegardless()
+    }
+
+    private func makeDragPanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 108, height: 108),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .statusBar
+        panel.ignoresMouseEvents = true
+        panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let view = NSImageView(frame: panel.contentLayoutRect)
+        view.autoresizingMask = [.width, .height]
+        view.imageScaling = .scaleProportionallyUpOrDown
+        panel.contentView = view
+        return panel
+    }
+
+    private func moveDragImage() {
+        guard let dragPanel, dragPanel.isVisible else { return }
+        let location = NSEvent.mouseLocation
+        let side = dragPanel.frame.width
+        let origin = NSPoint(x: location.x - side / 2, y: location.y - side / 2)
+        guard dragPanel.frame.origin != origin else { return }
+        dragPanel.setFrameOrigin(origin)
+    }
+
+    private func hideDragImage() {
+        dragPanel?.orderOut(nil)
+    }
+
+    private func adoptCustomOrder() {
+        if settings.sortBy != .custom {
+            settings.sortBy = .custom
+        }
+    }
+
+    private func absorb(_ sourceID: String, into targetID: String) {
+        guard sourceID != targetID, query.isEmpty else { return }
+        adoptCustomOrder()
+        guard case .app(let appID) = slot(sourceID) else {
+            move(sourceID, onto: targetID)
+            return
+        }
+        switch slot(targetID) {
+        case .folder(let folderID):
+            guard removeSlot(sourceID) != nil else { return }
+            if let index = folders.firstIndex(where: { $0.id == folderID }),
+               !folders[index].appIDs.contains(appID) {
+                folders[index].appIDs.append(appID)
+            }
+            reflow()
+            persist()
+        case .app(let targetAppID):
+            let folder = FolderItem(id: UUID(), name: nextFolderName(), appIDs: [targetAppID, appID], createdAt: Date())
+            folders.append(folder)
+            rebuildIndexes()
+            _ = removeSlot(sourceID)
+            replace(targetID, with: .folder(folder.id))
+            reflow()
+            persist()
+        default:
+            move(sourceID, onto: targetID)
+        }
+    }
+
+    private func flatIndex(of id: String) -> Int? {
+        var index = 0
+        for page in pages {
+            for slot in page.slots {
+                if slot.id == id { return index }
+                index += 1
+            }
+        }
+        return nil
+    }
+
+    private func slot(_ id: String) -> Slot? {
+        pages.lazy.flatMap(\.slots).first { $0.id == id }
+    }
+
+    private func replace(_ id: String, with slot: Slot) {
+        for pageIndex in pages.indices {
+            if let index = pages[pageIndex].slots.firstIndex(where: { $0.id == id }) {
+                pages[pageIndex].slots[index] = slot
+                return
+            }
+        }
+    }
+
+    private func insert(_ slot: Slot, after targetID: String) {
+        for pageIndex in pages.indices {
+            if let slotIndex = pages[pageIndex].slots.firstIndex(where: { $0.id == targetID }) {
+                pages[pageIndex].slots.insert(slot, at: slotIndex + 1)
+                reflow()
+                return
+            }
+        }
+        append(slot)
+    }
+
+    private func insert(_ slot: Slot, before targetID: String) {
+        for pageIndex in pages.indices {
+            if let slotIndex = pages[pageIndex].slots.firstIndex(where: { $0.id == targetID }) {
+                pages[pageIndex].slots.insert(slot, at: slotIndex)
+                reflow()
+                return
+            }
+        }
+        append(slot)
+    }
+
+    private func removeAppCompletely(_ id: String) {
+        apps.removeAll { $0.id == id }
+        rebuildIndexes()
+        iconCache[id] = nil
+        for index in folders.indices {
+            folders[index].appIDs.removeAll { $0 == id }
+        }
+        folders.removeAll { $0.appIDs.isEmpty }
+        rebuildIndexes()
+        for index in pages.indices {
+            pages[index].slots.removeAll { slot in
+                if case .app(let appID) = slot { return appID == id }
+                if case .folder(let folderID) = slot { return folder(folderID) == nil }
+                return false
+            }
+        }
+        if pages.allSatisfy(\.slots.isEmpty) { pages = [Page()] }
+        selection = []
+        persist()
+    }
+
+    private func nextFolderName() -> String {
+        let existing = Set(folders.map(\.name))
+        if !existing.contains("文件夹") { return "文件夹" }
+        var number = 2
+        while existing.contains("文件夹 \(number)") { number += 1 }
+        return "文件夹 \(number)"
+    }
+
+    private func sortAppIDs(_ ids: [String], by key: SortKey, ascending: Bool) -> [String] {
+        ids.sorted { lhs, rhs in
+            guard let a = app(lhs), let b = app(rhs) else { return lhs < rhs }
+            return appLess(a, b, by: key, ascending: ascending)
+        }
+    }
+
+    private func rankedLess(_ lhs: Slot, _ rhs: Slot, options: ReorganizeOptions) -> Bool {
+        let left = rank(lhs)
+        let right = rank(rhs)
+        if options.folders != .mixed, left.isFolder != right.isFolder {
+            return options.folders == .before ? left.isFolder : right.isFolder
+        }
+        if options.appleApps != .mixed, left.isApple != right.isApple {
+            return options.appleApps == .before ? left.isApple : right.isApple
+        }
+        return appLess(left, right, by: options.sortBy, ascending: options.ascending)
+    }
+
+    private struct Rank {
+        var name: String
+        var added: Date
+        var opened: Date
+        var isFolder: Bool
+        var isApple: Bool
+        var tie: String
+    }
+
+    private func rank(_ slot: Slot) -> Rank {
+        switch slot {
+        case .app(let id):
+            let app = app(id)
+            return Rank(
+                name: app?.effectiveName ?? id,
+                added: app?.addedAt ?? .distantPast,
+                opened: app?.lastOpenedAt ?? .distantPast,
+                isFolder: false,
+                isApple: app?.isApple ?? false,
+                tie: id
+            )
+        case .folder(let id):
+            let folder = folder(id)
+            return Rank(
+                name: folder?.name ?? "文件夹",
+                added: folder?.createdAt ?? .distantPast,
+                opened: .distantPast,
+                isFolder: true,
+                isApple: false,
+                tie: id.uuidString
+            )
+        }
+    }
+
+    private func appLess(_ lhs: Rank, _ rhs: Rank, by key: SortKey, ascending: Bool) -> Bool {
+        let order: ComparisonResult
+        switch key {
+        case .name, .custom:
+            order = lhs.name.localizedStandardCompare(rhs.name)
+        case .added:
+            order = lhs.added == rhs.added ? .orderedSame : (lhs.added < rhs.added ? .orderedAscending : .orderedDescending)
+        case .opened:
+            order = lhs.opened == rhs.opened ? .orderedSame : (lhs.opened < rhs.opened ? .orderedAscending : .orderedDescending)
+        }
+        if order == .orderedSame { return lhs.tie < rhs.tie }
+        let isAscending = order == .orderedAscending
+        return ascending ? isAscending : !isAscending
+    }
+
+    private func appLess(_ lhs: AppItem, _ rhs: AppItem, by key: SortKey, ascending: Bool) -> Bool {
+        appLess(
+            Rank(name: lhs.effectiveName, added: lhs.addedAt, opened: lhs.lastOpenedAt ?? .distantPast, isFolder: false, isApple: lhs.isApple, tie: lhs.id),
+            Rank(name: rhs.effectiveName, added: rhs.addedAt, opened: rhs.lastOpenedAt ?? .distantPast, isFolder: false, isApple: rhs.isApple, tie: rhs.id),
+            by: key, ascending: ascending
+        )
+    }
+
+    /// 全屏面板是 mainMenu+1 级窗口，会盖住普通弹窗，把确认框提到它之上。
+    private func runOverPanel(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        alert.window.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
+        return alert.runModal()
+    }
+
+    private func promptText(_ title: String, value: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = value
+        alert.accessoryView = field
+        alert.addButton(withTitle: "好")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        guard runOverPanel(alert) == .alertFirstButtonReturn else { return nil }
+        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func persist() {
+        let snapshot = LibrarySnapshot(
+            settings: settings, apps: apps, folders: folders, pages: pages, currentPage: currentPage
+        )
+        let fileURL = fileURL
+        persistQueue.async {
+            let failure: String?
+            do {
+                let data = try JSONEncoder().encode(snapshot)
+                try data.write(to: fileURL, options: .atomic)
+                failure = nil
+            } catch {
+                failure = "保存失败：\(error.localizedDescription)"
+            }
+            guard let failure else { return }
+            DispatchQueue.main.async { AppModel.shared.notice = failure }
+        }
+    }
+
+    private func wireMonitors() {
+        HotKeyCenter.shared.onPress = { AppModel.shared.toggle() }
+        CornerMonitor.shared.onFire = { AppModel.shared.toggle() }
+        PinchMonitor.shared.onOpen = { AppModel.shared.openFromPinch() }
+        PinchMonitor.shared.onClose = { AppModel.shared.close() }
+        PinchMonitor.shared.onUnavailable = { AppModel.shared.notice = $0 }
+    }
+
+    func keepOutOfDock() {
+        let policy: NSApplication.ActivationPolicy = settings.showDockIcon ? .regular : .accessory
+        if NSApp.activationPolicy() != policy {
+            NSApp.setActivationPolicy(policy)
+        }
+    }
+
+    private func applyChrome() {
+        notice = registerHotKey()
+        CornerMonitor.shared.apply(settings.hotCorner)
+        PinchMonitor.shared.apply(counts: settings.pinchCounts)
+        keepOutOfDock()
+    }
+
+    func start() {
+        applyChrome()
+        if dragPanel == nil { dragPanel = makeDragPanel() }
+        if settings.launchAtLogin {
+            applyLaunchAtLogin()
+        }
+    }
+
+    func applyLaunchAtLogin() {
+        notice = LoginItem.apply(settings.launchAtLogin)
+    }
+}
