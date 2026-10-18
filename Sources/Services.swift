@@ -467,6 +467,25 @@ final class PinchMonitor {
     var onOpen: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
     var onUnavailable: ((String) -> Void)?
+
+    func bindPanels(
+        openTray: @escaping () -> Void,
+        closeTray: @escaping () -> Void,
+        openLauncher: @escaping () -> Void,
+        closeLauncher: @escaping () -> Void
+    ) {
+        onOpen = { fingers in
+            if fingers == 3 { openTray() } else { openLauncher() }
+        }
+        onClose = { _ in
+            // Finger count selects the opening surface, not the closing target.
+            // Both close actions are idempotent; an outward gesture dismisses
+            // whichever panel is currently visible.
+            closeTray()
+            closeLauncher()
+        }
+    }
+
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var devices: [UnsafeMutableRawPointer] = []
@@ -518,27 +537,32 @@ final class PinchMonitor {
         startTap()
     }
 
-    fileprivate func shouldSwallow(type: CGEventType, event: CGEvent) -> Bool {
+    func shouldSwallow(type: CGEventType, event: CGEvent) -> Bool {
         let raw = type.rawValue
         guard raw == 29 || raw == 30 else { return false }
         stateLock.lock()
         defer { stateLock.unlock() }
         let fingersTracked = openCounts.contains(classifier.peak)
         guard raw == 30, event.getIntegerValueField(Self.gestureHIDTypeField) == Self.dockSwipeHIDType else {
-            return classifier.kind == .pinch || (swallowingDock == true && classifier.fingers > 0)
+            return classifier.signal == .open
+                || (swallowingDock == true && classifier.fingers > 0 && classifier.signal != .close)
         }
-        // 系统自己已经判好了这次 Dock 手势是左右/上下平移还是捏合，以它为准：
-        // 平移一律放行并且不再当成捏合；捏合从 began 开始整段拦下，不等我们自己的判定。
+        // Only replace the system's app-launcher pinch. Show Desktop and other
+        // Dock motions must not fall back to swallowing every classified pinch.
         let phase = event.getIntegerValueField(Self.gesturePhaseField)
         let motion = event.getIntegerValueField(Self.swipeMotionField)
         if phase == Self.phaseBegan { swallowingDock = nil }
-        if motion == Self.motionHorizontal || motion == Self.motionVertical {
-            classifier.markSwipe()
-            if swallowingDock == nil { swallowingDock = false }
-        } else if motion == Self.motionPinch, swallowingDock == nil {
-            swallowingDock = fingersTracked || classifier.kind == .pinch
+        if motion != Self.motionPinch {
+            if motion == Self.motionHorizontal || motion == Self.motionVertical {
+                classifier.markSwipe()
+            }
+            swallowingDock = false
+        } else if classifier.signal == .close {
+            swallowingDock = false
+        } else if swallowingDock == nil {
+            swallowingDock = fingersTracked || classifier.signal == .open
         }
-        let swallow = swallowingDock ?? (classifier.kind == .pinch)
+        let swallow = swallowingDock ?? (classifier.signal == .open)
         if phase == Self.phaseEnded || phase == Self.phaseCancelled { swallowingDock = nil }
         return swallow
     }
@@ -554,6 +578,10 @@ final class PinchMonitor {
                 samples.append(TouchSample(id: touch.identifier, state: touch.state, x: point.x, y: point.y))
             }
         }
+        handle(samples: samples)
+    }
+
+    func handle(samples: [TouchSample]) {
         stateLock.lock()
         let counts = openCounts
         let signal = classifier.feed(samples) { counts.contains($0) }

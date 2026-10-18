@@ -32,6 +32,7 @@ struct PinchClassifier {
     private(set) var kind = Kind.unknown
     private(set) var fingers = 0
     private(set) var peak = 0
+    private(set) var signal: PinchSignal?
     private var peakFrames = 0
     private var fired = false
     private var landing: [Int32: (x: Float, y: Float)] = [:]
@@ -91,6 +92,7 @@ struct PinchClassifier {
             if let signal {
                 kind = .pinch
                 fired = true
+                self.signal = signal
                 return signal
             }
         }

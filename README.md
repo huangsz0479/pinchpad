@@ -14,6 +14,8 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 - Menu bar icon: left-click to toggle the organizer; right-click for Settings and Quit
 - Three-finger pinch inward to open the organizer; spread outward to close it
 - Four-finger pinch inward to open the full launcher; spread outward to close it
+- Either enabled outward-spread gesture dismisses the visible panel, even if it was opened another way
+- Four-finger spread still reaches macOS for Show Desktop; Pinchpad only intercepts the inward app-launcher pinch
 - Global keyboard shortcut (default `F4`, configurable) and screen hot corners open the full launcher
 - Three- and four-finger gestures can be enabled independently in Settings
 
@@ -126,6 +128,7 @@ Pinchpad/
 │   └── PinchClassifier.swift  # Trackpad multi-finger gesture classification
 ├── Tests/
 │   ├── PanelTransitionProbe.swift # Full-launcher transitions and build-freshness checks
+│   ├── PinchGestureProbe.swift    # Gesture recognition and three-/four-finger panel routing
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
 │   └── TrayPlacementProbe.swift   # Two-pixel menu bar gap and window-level checks
@@ -155,6 +158,11 @@ swift Tests/TrayPlacementProbe.swift <running Pinchpad PID>
 
 # The app must appear in the organizer; this actually clicks and opens it:
 swift Tests/TrayActivationProbe.swift <running Pinchpad PID> "<app name>" <bundleID> mouse
+
+# Gesture recognition and routing without a trackpad or running app:
+swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
+  Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
+  -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
 ```
 
 The probes check build freshness, full-launcher transitions, organizer transparency and placement, and app activation. The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions.

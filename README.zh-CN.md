@@ -14,6 +14,8 @@ macOS 菜单栏常驻的**应用启动器与收纳面板**。从菜单栏或三�
 - 菜单栏图标：左键打开/关闭收纳面板，右键打开设置与退出菜单
 - 三指捏合：打开收纳面板；三指展开：关闭收纳面板
 - 四指捏合：打开完整启动面板；四指展开：关闭完整启动面板
+- 已启用的三指或四指展开手势都会关闭当前显示的面板，不受原先打开方式限制
+- 四指张开仍交给 macOS 执行「显示桌面」；Pinchpad 只拦截向内捏合打开应用面板的动作
 - 全局快捷键（默认 `F4`，可在设置里改）和屏幕热角：打开完整启动面板
 - 三指 / 四指手势可在设置里分别开关
 
@@ -126,6 +128,7 @@ Pinchpad/
 │   └── PinchClassifier.swift  # 触控板多指手势判定
 ├── Tests/
 │   ├── PanelTransitionProbe.swift # 完整面板开关、动画与构建一致性检查
+│   ├── PinchGestureProbe.swift    # 手势识别与三指/四指面板路由检查
 │   ├── TrayActivationProbe.swift  # 图标点击、轻微拖动与辅助功能按压
 │   ├── TrayCornerProbe.swift      # 圆角外侧像素透明度检查
 │   └── TrayPlacementProbe.swift   # 菜单栏下方 2px 间距与窗口层级检查
@@ -155,6 +158,11 @@ swift Tests/TrayPlacementProbe.swift <运行中的 Pinchpad PID>
 
 # 应用必须已出现在收纳面板中；探针会实际点击并打开该应用：
 swift Tests/TrayActivationProbe.swift <运行中的 Pinchpad PID> "<应用名称>" <bundleID> mouse
+
+# 不需要触控板或运行中的应用，检查手势识别与面板路由：
+swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
+  Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
+  -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
 ```
 
 会验证构建一致性、完整面板开关、收纳面板的圆角与位置，以及图标是否能打开应用。启动探针还支持 `drift`（轻微拖动）和 `ax`（辅助功能按压）模式。运行测试的终端或宿主程序需要相应的辅助功能、截屏及自动化权限。

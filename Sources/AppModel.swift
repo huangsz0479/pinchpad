@@ -1465,20 +1465,12 @@ final class AppModel: ObservableObject {
     private func wireMonitors() {
         HotKeyCenter.shared.onPress = { AppModel.shared.toggle() }
         CornerMonitor.shared.onFire = { AppModel.shared.toggle() }
-        PinchMonitor.shared.onOpen = { fingers in
-            if fingers == 3 {
-                AppDelegate.current?.openTrayFromPinch()
-            } else {
-                AppModel.shared.openFromPinch()
-            }
-        }
-        PinchMonitor.shared.onClose = { fingers in
-            if fingers == 3 {
-                AppDelegate.current?.dismissTray()
-            } else {
-                AppModel.shared.close()
-            }
-        }
+        PinchMonitor.shared.bindPanels(
+            openTray: { AppDelegate.current?.openTrayFromPinch() },
+            closeTray: { AppDelegate.current?.dismissTray() },
+            openLauncher: { AppModel.shared.openFromPinch() },
+            closeLauncher: { AppModel.shared.close() }
+        )
         PinchMonitor.shared.onUnavailable = { AppModel.shared.notice = $0 }
     }
 
