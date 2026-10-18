@@ -464,8 +464,8 @@ private let multitouchCallback: MTFrameCallback = { _, touches, count, _, _ in
 
 final class PinchMonitor {
     static let shared = PinchMonitor()
-    var onOpen: (() -> Void)?
-    var onClose: (() -> Void)?
+    var onOpen: ((Int) -> Void)?
+    var onClose: ((Int) -> Void)?
     var onUnavailable: ((String) -> Void)?
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -557,13 +557,14 @@ final class PinchMonitor {
         stateLock.lock()
         let counts = openCounts
         let signal = classifier.feed(samples) { counts.contains($0) }
+        let fingers = classifier.peak
         // 只有被判定为捏合（或被整段拦下的 Dock 手势）的触点序列才算手势尾巴，
         // 普通点按本身也会产生按下触点，不能误伤。
         if samples.contains(where: \.isDown), classifier.kind == .pinch || swallowingDock == true {
             touchGuardUntil = Date().addingTimeInterval(Self.touchTail)
         }
         stateLock.unlock()
-        if let signal { claim(open: signal == .open) }
+        if let signal { claim(open: signal == .open, fingers: fingers) }
     }
 
     /// 捏合手势进行期间（及抬手后 0.2s 内）的指针点击多半是手势尾巴，应被忽略。
@@ -574,14 +575,14 @@ final class PinchMonitor {
         return touchGuardUntil
     }
 
-    private func claim(open: Bool) {
+    private func claim(open: Bool, fingers: Int) {
         stateLock.lock()
         let recent = Date().timeIntervalSince(lastFire) < 0.6
         if !recent { lastFire = Date() }
         stateLock.unlock()
         guard !recent else { return }
         DispatchQueue.main.async {
-            if open { self.onOpen?() } else { self.onClose?() }
+            if open { self.onOpen?(fingers) } else { self.onClose?(fingers) }
         }
     }
 

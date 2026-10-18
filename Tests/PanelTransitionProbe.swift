@@ -12,19 +12,13 @@ guard CommandLine.arguments.count == 3, let pid = Int32(CommandLine.arguments[1]
 }
 let root = URL(fileURLWithPath: CommandLine.arguments[2])
 
+/// 左键菜单栏图标现在弹出的是收纳面板，不是全屏面板；这里改用全局快捷键
+/// （默认 F4，keyCode 118）驱动开合，等价于用户按键。
 func clickTray() throws {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = [
-        "-e",
-        "tell application \"System Events\" to tell process \"Pinchpad\" to click (first menu bar item of menu bar 2 whose description is \"Pinchpad\")"
-    ]
-    process.standardOutput = FileHandle.nullDevice
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        throw NSError(domain: "PanelTransitionProbe", code: Int(process.terminationStatus))
-    }
+    let down = CGEvent(keyboardEventSource: nil, virtualKey: 118, keyDown: true)
+    let up = CGEvent(keyboardEventSource: nil, virtualKey: 118, keyDown: false)
+    down?.post(tap: .cghidEventTap)
+    up?.post(tap: .cghidEventTap)
 }
 
 /// 面板是应用里面积最大的窗口（拖拽浮窗、状态栏项都很小）。

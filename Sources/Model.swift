@@ -265,6 +265,9 @@ struct LibrarySnapshot: Codable {
     var folders: [FolderItem]
     var pages: [Page]
     var currentPage: Int
+    /// 可选字段：旧版本快照里没有这个 key，合成 Codable 会对可选字段用
+    /// decodeIfPresent，旧文件读出来是 nil 而不是整个库解析失败。
+    var pinnedAppIDs: [String]?
 }
 
 enum GridPreset: CaseIterable, Identifiable {

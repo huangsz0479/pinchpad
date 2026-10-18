@@ -907,6 +907,12 @@ private struct SlotCell: View, Equatable {
                 } label: {
                     Label("固定到 Dock", systemImage: "dock.rectangle")
                 }
+                Button {
+                    model.togglePin(app)
+                } label: {
+                    Label(model.isPinned(app) ? "从菜单栏移除" : "收进菜单栏",
+                          systemImage: model.isPinned(app) ? "menubar.arrow.up.rectangle" : "menubar.arrow.down.rectangle")
+                }
                 Divider()
                 Button(role: .destructive) {
                     model.promptUninstall(app)

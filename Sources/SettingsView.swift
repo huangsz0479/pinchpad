@@ -101,8 +101,8 @@ private struct GesturesTab: View {
                 HotKeyEditor(model: model)
             }
             Section("触控板手势") {
-                Toggle("三指捏合呼出", isOn: $model.settings.pinchThree)
-                Toggle("四指捏合呼出", isOn: $model.settings.pinchFour)
+                Toggle("三指捏合打开菜单栏收纳", isOn: $model.settings.pinchThree)
+                Toggle("四指捏合打开全屏面板", isOn: $model.settings.pinchFour)
                 Text("支持内置触控板与外接 Magic Trackpad。若关闭四指捏合，Pinchpad 会拦截系统默认的四指应用面板动作。")
                     .font(.caption)
                     .foregroundStyle(.secondary)

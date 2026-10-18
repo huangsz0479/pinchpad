@@ -20,6 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var host: NSHostingView<PinchpadRoot>?
     private var panelWindowed = false
     private var statusItem: NSStatusItem?
+    private var trayPanel: TrayPanel?
+    private var trayShown = false
+    private var trayToken = 0
+    private var trayMonitor: Any?
+    /// 最近一次按下菜单栏图标的时间。图标点击本身就会触发 toggleTray，
+    /// 全局「点外部关闭」回调可能延迟到达，靠这个时间戳把图标点击排除掉。
+    private var statusItemDownAt = Date.distantPast
+    /// 菜单栏图标最近一次已知的屏幕坐标。布局面板时刷新；button.window
+    /// 短暂为 nil 期间靠它判断「这点其实点在图标上」。
+    private var lastStatusItemRect: CGRect?
     private var inputMonitor: Any?
     private var outsideMonitor: Any?
     private var auroraView: NSView?
@@ -122,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func refreshTray() {
         let show = AppModel.shared.settings.showMenuBar
         if !show {
+            dismissTray()
             if let statusItem {
                 NSStatusBar.system.removeStatusItem(statusItem)
                 self.statusItem = nil
@@ -146,12 +157,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func statusClicked(_ sender: Any?) {
+        // 先盖时间戳再 toggle：action 之后的几百 ms 里可能还有积压的
+        // mouseDown 到达全局「点外部」监听，这个时间窗里的判定都算图标。
+        statusItemDownAt = Date()
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             popTrayMenu()
             return
         }
-        AppModel.shared.toggle()
+        toggleTray()
     }
 
     private func popTrayMenu() {
@@ -171,6 +185,192 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem?.menu = nil
     }
 
+    // MARK: - 菜单栏收纳面板
+
+    /// 左键点菜单栏图标：控制中心式的毛玻璃小面板，放钉选的常用应用。
+    func toggleTray() {
+        if trayShown { dismissTray() } else { showTray() }
+    }
+
+    func openTrayFromPinch() {
+        guard !trayShown else { return }
+        AppModel.shared.close()
+        showTray()
+    }
+
+    func dismissTray() {
+        guard let trayPanel else { trayShown = false; return }
+        trayToken += 1
+        let token = trayToken
+        trayShown = false
+        removeTrayMonitor()
+        if trayPanel.isKeyWindow { trayPanel.resignKey() }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            trayPanel.orderOut(nil)
+            trayPanel.alphaValue = 1
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.1
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            trayPanel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, token == self.trayToken, !self.trayShown else { return }
+                trayPanel.orderOut(nil)
+                trayPanel.alphaValue = 1
+            }
+        })
+    }
+
+    private func showTray() {
+        guard statusItem?.button?.window != nil else { return }
+        let panel = ensureTrayPanel()
+        trayToken += 1
+        trayShown = true
+        AppModel.shared.refreshRunningApps()
+        installTrayMonitor()
+        layoutTray()
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.alphaValue = 1
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        // Fade in at the final position so the entrance never crosses the menu bar.
+        panel.alphaValue = 0
+        panel.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    private func ensureTrayPanel() -> TrayPanel {
+        if let trayPanel { return trayPanel }
+        let panel = TrayPanel(
+            contentRect: NSRect(origin: .zero, size: NSSize(width: TrayView.contentWidth, height: 200)),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue - 1)
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        let container = TraySurfaceView()
+        container.wantsLayer = true
+        container.autoresizingMask = [.width, .height]
+        let host = PanelHost(rootView: TrayView(
+            model: AppModel.shared,
+            liquidGlass: {
+                if #available(macOS 26, *) { return true }
+                return false
+            }(),
+            onClose: { [weak self] in self?.dismissTray() },
+            onContentChange: { [weak self] in self?.layoutTray(animated: true) }
+        ))
+        host.autoresizingMask = [.width, .height]
+        host.sizingOptions = []
+        host.safeAreaRegions = []
+        if #available(macOS 26, *) {
+            // 液态玻璃：系统的 NSGlassEffectView 自带折射边缘和高光，
+            // 内容塞进它的 contentView，圆角由它自己管。
+            let glass = NSGlassEffectView()
+            glass.autoresizingMask = [.width, .height]
+            glass.cornerRadius = 13
+            // .clear 比 .regular 更通透，折射边缘和流动高光才是「液态」的味儿。
+            glass.style = .clear
+            glass.contentView = host
+            container.addSubview(glass)
+        } else {
+            let effect = NSVisualEffectView()
+            effect.material = .popover
+            effect.blendingMode = .behindWindow
+            effect.state = .active
+            effect.autoresizingMask = [.width, .height]
+            effect.wantsLayer = true
+            effect.layer?.cornerRadius = 13
+            effect.layer?.cornerCurve = .continuous
+            effect.layer?.masksToBounds = true
+            effect.addSubview(host)
+            container.addSubview(effect)
+        }
+        panel.contentView = container
+        trayPanel = panel
+        return panel
+    }
+
+    /// 按菜单栏底边而非图标底边定位，只留 2 个屏幕像素的间隙。
+    private func layoutTray(animated: Bool = false) {
+        guard let trayPanel, let button = statusItem?.button, let window = button.window else { return }
+        let width = TrayView.contentWidth
+        let height = TrayView.contentHeight(
+            pinned: AppModel.shared.pinnedApps.count,
+            running: AppModel.shared.runningApps.count
+        )
+        let buttonRect = window.convertToScreen(button.convert(button.bounds, to: nil))
+        lastStatusItemRect = buttonRect
+        var x = buttonRect.midX - width / 2
+        let screen = window.screen ?? NSScreen.main
+        if let frame = screen?.visibleFrame {
+            x = min(max(x, frame.minX + 6), frame.maxX - width - 6)
+        }
+        let menuBottom: CGFloat
+        if let screen {
+            let menuHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+            menuBottom = min(screen.visibleFrame.maxY, screen.frame.maxY - menuHeight)
+        } else {
+            menuBottom = buttonRect.minY
+        }
+        let gap = 2 / (screen?.backingScaleFactor ?? 1)
+        let topY = menuBottom - gap
+        let target = NSRect(x: x, y: topY - height, width: width, height: height)
+        guard trayPanel.frame != target else { return }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                trayPanel.animator().setFrame(target, display: false)
+            }
+        } else {
+            trayPanel.setFrame(target, display: false)
+        }
+        trayPanel.invalidateShadow()
+    }
+
+    private func installTrayMonitor() {
+        guard trayMonitor == nil else { return }
+        // 收纳面板不激活应用，按键事件不会投递到它——靠全局监听补一个 Esc 关闭。
+        trayMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            DispatchQueue.main.async {
+                if event.type == .keyDown {
+                    if event.keyCode == 53 { self?.dismissTray() }
+                } else {
+                    self?.closeTrayIfClickedOutside()
+                }
+            }
+        }
+    }
+
+    private func removeTrayMonitor() {
+        guard let trayMonitor else { return }
+        NSEvent.removeMonitor(trayMonitor)
+        self.trayMonitor = nil
+    }
+
+    /// 全局监听只覆盖别的 app 里的点击；点在面板上或图标自身都不算「外部」。
+    private func closeTrayIfClickedOutside() {
+        guard trayShown, let trayPanel else { return }
+        guard Date().timeIntervalSince(statusItemDownAt) > 0.4 else { return }
+        guard !isStatusItemClick() else { return }
+        if trayPanel.frame.contains(NSEvent.mouseLocation) { return }
+        dismissTray()
+    }
+
     @objc private func openFromTray() { AppModel.shared.open() }
     @objc private func openSettingsFromTray() { SettingsOpener.open() }
     @objc private func quitFromTray() { NSApp.terminate(nil) }
@@ -185,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         visibilityToken += 1
         let token = visibilityToken
         if model.isOpen {
+            dismissTray()
             ensurePanel()
             layout()
             setDockHidden(model.settings.hideDockWhileOpen)
@@ -612,12 +813,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func isStatusItemClick() -> Bool {
-        guard let button = statusItem?.button, let window = button.window else { return false }
-        let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
-        return rect.contains(NSEvent.mouseLocation)
+        // AppKit 的状态项命中区比 button.bounds 宽几 pt——放宽 6pt 对齐它的行为，
+        // 否则贴着图标边缘的点击会被当成「外部点击」误杀面板。
+        if let button = statusItem?.button, let window = button.window {
+            let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
+            lastStatusItemRect = rect
+            return rect.insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation)
+        }
+        // button.window 在状态项刚创建/窗口重建的极短窗口里可能是 nil：
+        // 退回上次缓存的位置判断；连缓存都没有时宁可当成图标点击放过
+        // （图标自己的 action 会走 toggle），不能让外部关闭误杀刚弹出的面板。
+        guard let rect = lastStatusItemRect else { return true }
+        return rect.insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation)
     }
 
     private func handleInput(_ event: NSEvent) -> NSEvent? {
+        if trayShown {
+            if event.type == .keyDown, event.keyCode == 53,
+               event.window === trayPanel || trayPanel?.isKeyWindow == true {
+                dismissTray()
+                return nil
+            }
+            if event.type == .leftMouseDown || event.type == .rightMouseDown {
+                // 收纳面板不激活应用，同进程窗口里的点击（如设置窗）走到这里关闭它。
+                // 菜单栏图标的按下先记时间戳——图标的 toggle 在 mouseUp 才触发，
+                // 全局「点外部」回调不能抢在它前面把面板关掉。
+                if event.window === statusItem?.button?.window {
+                    statusItemDownAt = Date()
+                } else if let window = event.window, window !== trayPanel {
+                    dismissTray()
+                }
+                return event
+            }
+        }
         guard let panel, AppModel.shared.isOpen else { return event }
         if event.type == .flagsChanged {
             let option = event.modifierFlags.contains(.option)
@@ -732,6 +960,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         AppModel.shared.close()
         return false
+    }
+}
+
+/// 收纳面板：非激活（点它不抢走前台）但可以成 key，Esc 才能正常关闭。
+final class TraySurfaceView: NSView {
+    override var isOpaque: Bool { false }
+
+    override func makeBackingLayer() -> CALayer {
+        let layer = super.makeBackingLayer()
+        // Clip the entire surface, not just the glass child. A shadow on this
+        // layer would otherwise leave nontransparent wedges in the window corners.
+        layer.cornerRadius = 13
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = true
+        return layer
+    }
+}
+
+final class TrayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) {
+        AppDelegate.current?.dismissTray()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            AppDelegate.current?.dismissTray()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 

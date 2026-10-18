@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 
 @MainActor
@@ -59,6 +60,8 @@ final class AppModel: ObservableObject {
     }
     @Published var pages: [Page]
     @Published var currentPage: Int
+    /// 收进菜单栏收纳面板的应用，按钉选先后排序。
+    @Published var pinnedAppIDs: [String]
     @Published var pageDirection: Int = 1
     @Published var isOpen = false
     /// 每次打开时递增：把图标复位成「还没出场」的隐藏状态（无动画）。
@@ -162,12 +165,14 @@ final class AppModel: ObservableObject {
             folders = snapshot.folders
             pages = snapshot.pages.isEmpty ? [Page()] : snapshot.pages
             currentPage = snapshot.currentPage
+            pinnedAppIDs = snapshot.pinnedAppIDs ?? []
         } else {
             settings = Preferences()
             apps = []
             folders = []
             pages = [Page()]
             currentPage = 0
+            pinnedAppIDs = []
         }
         rebuildIndexes()
         ready = true
@@ -654,6 +659,88 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 菜单栏收纳面板里钉住的应用，钉不到的（已被扫描移除的）自动过滤掉。
+    var pinnedApps: [AppItem] {
+        pinnedAppIDs.compactMap { app($0) }
+    }
+
+    /// 收纳面板的「菜单栏」区：每次打开面板时从 NSWorkspace 现取，
+    /// 并跟着启动/退出通知刷新。按名称排序，当前最前面的应用排第一。
+    @Published var runningApps: [RunningApp] = []
+
+    /// 托盘「菜单栏」区只收真正在菜单栏有图标的应用——读进程的
+    /// AXExtrasMenuBar，第一个子项就是它的图标；顺路拿回图标元素
+    /// 和屏幕上 x 坐标：x 用来按菜单栏真实左右顺序排，元素留下来
+    /// 给点按时直接 press 真图标。
+    private func menuBarItem(of app: NSRunningApplication) -> (item: AXUIElement, x: CGFloat)? {
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        var extras: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, "AXExtrasMenuBar" as CFString, &extras) == .success,
+              let bar = extras else { return nil }
+        var children: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(bar as! AXUIElement, "AXChildren" as CFString, &children) == .success,
+              let items = children as? [AXUIElement], let item = items.first else { return nil }
+        var x = CGFloat.greatestFiniteMagnitude
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(item, "AXPosition" as CFString, &value) == .success,
+           let position = value {
+            var point = CGPoint.zero
+            if AXValueGetValue(position as! AXValue, .cgPoint, &point) { x = point.x }
+        }
+        return (item, x)
+    }
+
+    private func userFacing(_ app: NSRunningApplication) -> Bool {
+        guard !app.isTerminated, let bundleID = app.bundleIdentifier,
+              bundleID != Bundle.main.bundleIdentifier,
+              app.activationPolicy != .prohibited,
+              app.localizedName != nil,
+              app.bundleURL?.path.hasPrefix("/System") == false else { return false }
+        // 在全屏面板里被用户隐藏过的应用，托盘里也不显示。
+        if let catalog = catalogApp(bundleID: bundleID), catalog.hidden { return false }
+        return true
+    }
+
+    func refreshRunningApps() {
+        var seen = Set<String>()
+        var list: [RunningApp] = []
+        for app in NSWorkspace.shared.runningApplications {
+            guard userFacing(app), seen.insert(app.bundleIdentifier!).inserted,
+                  let (item, x) = menuBarItem(of: app) else { continue }
+            list.append(RunningApp(application: app, menuBarItem: item, menuBarX: x))
+        }
+        // 按真实菜单栏图标的左右顺序排，跟任务栏视觉一致。
+        runningApps = list.sorted { $0.menuBarX < $1.menuBarX }
+    }
+
+    /// 钉选应用是否正在运行——托盘在图标角上画小圆点。
+    /// 查的是全部在跑进程，不是菜单栏区那张缩过的表。
+    func isRunning(_ app: AppItem) -> Bool {
+        guard let bundleID = app.bundleID else { return false }
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == bundleID && !$0.isTerminated
+        }
+    }
+
+    /// 运行中应用想收进菜单栏时，先回扫描目录里找对应的 AppItem；
+    /// 目录里没有（不在扫描路径上的应用）返回 nil，托盘就不给钉选入口。
+    func catalogApp(bundleID: String) -> AppItem? {
+        appsByID.values.first { $0.bundleID == bundleID }
+    }
+
+    func isPinned(_ app: AppItem) -> Bool {
+        pinnedAppIDs.contains(app.id)
+    }
+
+    func togglePin(_ app: AppItem) {
+        if let index = pinnedAppIDs.firstIndex(of: app.id) {
+            pinnedAppIDs.remove(at: index)
+        } else {
+            pinnedAppIDs.append(app.id)
+        }
+        persist()
+    }
+
     func pinToDock(_ app: AppItem) {
         let alert = NSAlert()
         alert.messageText = "固定到 Dock？"
@@ -780,6 +867,8 @@ final class AppModel: ObservableObject {
             return
         }
         let kept = Set(next.map(\.id))
+        let pruned = pinnedAppIDs.filter { kept.contains($0) }
+        if pruned != pinnedAppIDs { pinnedAppIDs = pruned }
         let nextPaths = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0.path) })
         iconCache = iconCache.filter { id, _ in
             guard let path = nextPaths[id] else { return false }
@@ -1232,6 +1321,7 @@ final class AppModel: ObservableObject {
         apps.removeAll { $0.id == id }
         rebuildIndexes()
         iconCache[id] = nil
+        pinnedAppIDs.removeAll { $0 == id }
         for index in folders.indices {
             folders[index].appIDs.removeAll { $0 == id }
         }
@@ -1354,7 +1444,8 @@ final class AppModel: ObservableObject {
 
     private func persist() {
         let snapshot = LibrarySnapshot(
-            settings: settings, apps: apps, folders: folders, pages: pages, currentPage: currentPage
+            settings: settings, apps: apps, folders: folders, pages: pages, currentPage: currentPage,
+            pinnedAppIDs: pinnedAppIDs
         )
         let fileURL = fileURL
         persistQueue.async {
@@ -1374,8 +1465,20 @@ final class AppModel: ObservableObject {
     private func wireMonitors() {
         HotKeyCenter.shared.onPress = { AppModel.shared.toggle() }
         CornerMonitor.shared.onFire = { AppModel.shared.toggle() }
-        PinchMonitor.shared.onOpen = { AppModel.shared.openFromPinch() }
-        PinchMonitor.shared.onClose = { AppModel.shared.close() }
+        PinchMonitor.shared.onOpen = { fingers in
+            if fingers == 3 {
+                AppDelegate.current?.openTrayFromPinch()
+            } else {
+                AppModel.shared.openFromPinch()
+            }
+        }
+        PinchMonitor.shared.onClose = { fingers in
+            if fingers == 3 {
+                AppDelegate.current?.dismissTray()
+            } else {
+                AppModel.shared.close()
+            }
+        }
         PinchMonitor.shared.onUnavailable = { AppModel.shared.notice = $0 }
     }
 
@@ -1399,9 +1502,69 @@ final class AppModel: ObservableObject {
         if settings.launchAtLogin {
             applyLaunchAtLogin()
         }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in AppModel.shared.refreshRunningApps() }
+            }
+        }
+        refreshRunningApps()
     }
 
     func applyLaunchAtLogin() {
         notice = LoginItem.apply(settings.launchAtLogin)
+    }
+}
+
+/// 菜单栏区的运行中应用。普通点击通过 Launch Services 打开应用，
+/// AX 元素只用于右键菜单中的「打开菜单」。不参与持久化。
+struct RunningApp: Identifiable, Equatable {
+    let application: NSRunningApplication
+    let menuBarItem: AXUIElement
+    /// 图标在菜单栏里的 x 坐标，用来按真实左右顺序排；取不到的排最后。
+    let menuBarX: CGFloat
+
+    var id: String {
+        "\(application.bundleIdentifier ?? "app")-\(application.processIdentifier)"
+    }
+    var name: String { application.localizedName ?? "应用" }
+    var icon: NSImage? { application.icon }
+    var bundleID: String? { application.bundleIdentifier }
+    var isFrontmost: Bool { application.isActive }
+
+    /// 触发它真正的菜单栏图标（弹出应用自己的菜单）。
+    /// AX 元素失效时返回 false，调用方退回打开应用。
+    func pressMenuBarItem() -> Bool {
+        AXUIElementPerformAction(menuBarItem, kAXPressAction as CFString) == .success
+    }
+
+    func open() {
+        guard let url = application.bundleURL else {
+            activate()
+            return
+        }
+        // Reopen through Launch Services: activate alone cannot restore a
+        // closed main window or bring an accessory app's UI back.
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+            if let error {
+                Task { @MainActor in
+                    AppModel.shared.notice = "没能打开应用：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func activate() {
+        application.activate(options: [.activateAllWindows])
+    }
+
+    func terminate() {
+        application.terminate()
+    }
+
+    static func == (lhs: RunningApp, rhs: RunningApp) -> Bool {
+        lhs.application == rhs.application && lhs.menuBarX == rhs.menuBarX
     }
 }
