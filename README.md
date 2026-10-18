@@ -1,156 +1,185 @@
 # Pinchpad
 
-**语言 / Language:** 中文 · [English](README.en.md)
+**Language / 语言:** English · [简体中文](README.zh-CN.md)
 
-macOS 菜单栏常驻的**应用启动面板**：从菜单栏图标、快捷键、屏幕热角或触控板捏合呼出，全屏浏览本机应用，按页或纵向滚动，支持文件夹、拖拽排序、搜索和卸载。
+A native **app launcher and menu bar organizer** for macOS. Click the menu bar icon or use a three-finger pinch to access menu bar apps and pinned favorites. Open the full launcher with a four-finger pinch, a keyboard shortcut, or a hot corner to browse, search, and organize your apps.
 
-- 纯本地应用：不联网、无账号、无遥测。
-- 独立实现：不修改、不打包系统自带应用。
-- 菜单栏常驻，默认不占程序坞；打开面板时才出现。
+- Fully local: no network, no account, no telemetry.
+- Independent implementation: it does not modify or repackage any system app.
+- Lives in the menu bar and keeps out of the Dock by default; open either panel when you need it.
 
-## 功能
+## Features
 
-**呼出方式**
-- 菜单栏图标（左键打开/关闭，右键菜单里有设置与退出）
-- 全局快捷键（默认 `F4`，可在设置里改）
-- 屏幕四角热区
-- 触控板三指 / 四指捏合（可分别开关）
+**Ways to open**
+- Menu bar icon: left-click to toggle the organizer; right-click for Settings and Quit
+- Three-finger pinch inward to open the organizer; spread outward to close it
+- Four-finger pinch inward to open the full launcher; spread outward to close it
+- Global keyboard shortcut (default `F4`, configurable) and screen hot corners open the full launcher
+- Three- and four-finger gestures can be enabled independently in Settings
 
-**浏览与组织**
-- 三种浏览方式：分页、纵向滚动、窗口
-- 网格密度 7×5 ～ 10×6 可选
-- 翻页：`←` `→`、触控板左右滑、底部圆点、两侧箭头
-- 拖拽排序（拖到边缘自动翻页）；把一个应用拖到另一个应用上可新建文件夹
-- `Cmd` + 点击多选；多选后可新建文件夹或批量隐藏
-- 右键菜单：打开、在 Finder 中显示、重命名、隐藏、固定到 Dock、移到废纸篓
-- 搜索框实时过滤；按住 `Option` 点击可直接触发卸载（含相关支持文件清单确认）
-- 「整理应用布局」与「导入系统应用顺序」
+**Menu bar organizer**
+- The menu bar section shows third-party apps that actually own menu bar icons, in their on-screen order
+- Pin favorite apps in a separate section; your collection persists across restarts
+- Click the add tile to search and pin apps directly, or pin them from the full launcher's context menu
+- Click an icon to open or bring its app forward; right-click to unpin it or open a menu bar app's own menu
+- Native Liquid Glass on macOS 26 and later, with a system-material fallback on older versions
+- Sits two screen pixels below the menu bar; click outside or press `Esc` to dismiss
+- Does not move or hide other apps' actual menu bar icons
 
-**外观**
-- 背景三种样式：墙纸模糊 / 压暗 / 深色
-- 打开动画：背景快速淡入，图标按离中心距离分环弹出
-- 跟随系统「减弱动态」设置
+**Browsing and organization**
+- Three browsing modes: paged, vertical scrolling, window
+- Grid densities from 7×5 to 10×6
+- Page navigation: `←` `→`, horizontal trackpad swipe, page dots, side arrows
+- Drag to reorder (dragging to an edge turns the page); drop one app onto another to create a folder
+- `Cmd` + click for multi-selection; create a folder or hide apps in bulk
+- Context menu: open, reveal in Finder, pin to the organizer, rename, hide, pin to Dock, move to Trash
+- Live search filter; hold `Option` and click to uninstall directly (with a confirmation list of related files)
+- “Organize App Layout” and “Import System App Order”
 
-**系统集成**
-- 登录时自动启动
-- 菜单栏图标、可选程序坞图标
-- 打开时临时隐藏程序坞
-- 选择面板出现在主屏 / 指针所在屏 / 当前屏
-- 多显示器、所有空间、全屏应用之上显示
+**Appearance**
+- Three backdrop styles: wallpaper blur / dimmed / dark
+- Opening animation: the backdrop fades in quickly, icons pop in ring by ring from the center
+- Respects the system Reduce Motion setting
 
-## 系统要求
+**System integration**
+- Launch at login
+- Menu bar icon; optional Dock icon
+- Temporarily hide the Dock while the panel is open
+- Choose the screen to appear on: main / screen with pointer / active screen
+- Multi-display, all spaces, above full-screen apps
 
-- macOS 14（Sonoma）及以上
-- Apple Silicon（构建目标为 `arm64-apple-macosx14.0`）
-- 构建需要 Xcode Command Line Tools（`swiftc`、`xcrun`、`codesign`、`security`、`openssl`），不需要 Xcode 工程或 Apple 开发者账号
+## Requirements
 
-## 构建
+- macOS 14 (Sonoma) or later
+- Apple Silicon (built for `arm64-apple-macosx14.0`)
+- Building requires a toolchain with the macOS 26 SDK or later; the deployment target remains macOS 14
+- Xcode Command Line Tools for building (`swiftc`, `xcrun`, `codesign`, `security`, `openssl`). No Xcode project or Apple Developer account required.
+
+## Build
 
 ```bash
 cd Pinchpad
 ./build.sh
 ```
 
-输出：`../Pinchpad.app`（与本项目目录同级）。
+Output: `../Pinchpad.app` (a sibling of this project directory).
 
-说明：
+Notes:
 
-- **构建前先退出正在运行的 Pinchpad**（菜单栏图标右键 → 退出 Pinchpad），否则脚本会拒绝替换正在使用的 app。
-- 首次构建会自动生成一套本地自签名身份并保存在 `~/Library/Application Support/Pinchpad/signing/`；之后每次构建沿用同一身份，保证「辅助功能」等系统授权在重新打包后不失效。
-- 构建完成后：`open ../Pinchpad.app` 启动，菜单栏出现图标。
+- **Quit the running Pinchpad first** (right-click the menu bar icon → Quit Pinchpad); the script refuses to replace an app that is in use.
+- The first build generates a local self-signed identity under `~/Library/Application Support/Pinchpad/signing/` and reuses it for later builds, so system permissions (e.g. Accessibility) survive re-packaging.
+- After building: `open ../Pinchpad.app`; the menu bar icon appears.
 
-重新生成图标（可选）：
+Regenerate the icon (optional):
 
 ```bash
-swift generate-icon.swift <输出.iconset 目录> <菜单栏图标输出目录>
+swift generate-icon.swift <output-iconset-directory> <menubar-icon-output-directory>
 ```
 
-## 使用
+## Usage
 
-| 操作 | 方式 |
+| Action | How |
 |---|---|
-| 呼出面板 | 菜单栏图标 / 快捷键（默认 F4）/ 热角 / 触控板捏合 |
-| 关闭面板 | `Esc`、再捏合一次、点击面板外、再按一次快捷键 |
-| 翻页 | `←` `→`、触控板左右滑、底部圆点、两侧箭头 |
-| 多选 | `Cmd` + 点击 |
-| 建文件夹 | 拖一个应用到另一个应用上，或 `Cmd` 多选后点「新建文件夹」 |
-| 卸载 | `Option` + 点击（可在设置里关闭），或右键 → 移到废纸篓 |
-| 设置 | 菜单栏图标右键 → 设置 |
+| Open the organizer | Left-click the menu bar icon, or pinch inward with three fingers |
+| Open the full launcher | Four-finger pinch / shortcut (default `F4`) / hot corner / all-apps button in the organizer |
+| Close the organizer | `Esc`, click outside, click the menu bar icon again, or spread three fingers outward |
+| Close the full launcher | `Esc`, click empty space, press the shortcut again, or spread four fingers outward |
+| Pin an app | Click the add tile in the organizer, or use the full launcher's context menu |
+| Unpin an app | Right-click a pinned app and choose the unpin action |
+| Turn pages | `←` `→`, horizontal trackpad swipe, page dots, side arrows |
+| Multi-select | `Cmd` + click |
+| Create a folder | Drag one app onto another, or multi-select and click “New Folder” |
+| Uninstall | `Option` + click (can be disabled in Settings), or right-click → Move to Trash |
+| Settings | Right-click the menu bar icon → Settings |
 
-## 本地数据
+Documentation is available in English and Simplified Chinese. The app interface is currently in Simplified Chinese.
 
-| 路径 | 内容 |
+## Local data
+
+| Path | Contents |
 |---|---|
-| `~/Library/Application Support/Pinchpad/library.json` | 唯一应用数据：设置、应用列表、文件夹、分页、当前页。删除后重开会重新扫描并生成默认布局 |
-| `~/Library/Preferences/app.local.pinchpad.plist` | 系统偏好占位文件（基本为空） |
-| `~/Library/Application Support/Pinchpad/signing/` | 本地签名钥匙串与 p12（构建用；**勿删**，否则无法替换现有 app） |
+| `~/Library/Application Support/Pinchpad/library.json` | Settings, app list, pinned favorites, folders, pages, and current page. Deleting it triggers a fresh scan and a default layout |
+| `~/Library/Preferences/app.local.pinchpad.plist` | System preferences placeholder (effectively empty) |
+| `~/Library/Application Support/Pinchpad/signing/` | Local signing keychain and p12 used by the build. **Do not delete** — without it the existing app cannot be replaced |
 
-图标位图、背景光晕渐变、面板预热纹理等缓存**只在内存中**，退出即释放，不写磁盘缓存目录。
+Icon bitmaps, the backdrop glow gradients, and the prewarmed panel textures are **memory-only caches**; they are released on quit and no cache directories are written to disk.
 
-## 签名与权限
+## Signing and permissions
 
-- 使用构建脚本在本机生成的**自签名证书** `Pinchpad Local`（RSA 2048，有效期 10 年），不访问网络、不使用 Apple ID 或开发者证书。
-- 签名身份保存在 `~/Library/Application Support/Pinchpad/signing/`（`pinchpad.keychain-db` 与 `pinchpad.p12`），密码为 `pinchpad-local`，仅用于这个独立钥匙串，与登录钥匙串无关。
-- 触控板捏合需要「系统设置 → 隐私与安全性 → 辅助功能」授权；保持签名身份不变，重新打包后无需重新授权。
-- 未做公证（notarization），仅适合本机使用。
+- Uses a **self-signed certificate** generated locally by the build script: `Pinchpad Local` (RSA 2048, valid for 10 years). No network access, no Apple ID, no developer certificate.
+- The signing identity lives in `~/Library/Application Support/Pinchpad/signing/` (`pinchpad.keychain-db` and `pinchpad.p12`); its password is `pinchpad-local`. This is a dedicated keychain, separate from the login keychain.
+- Trackpad pinch, menu bar app discovery, and opening another app's menu require Accessibility permission under System Settings → Privacy & Security → Accessibility. Keeping the signing identity stable means you do not need to re-grant it after rebuilding.
+- The app is not notarized; it is intended for local use.
 
-## 项目结构
+## Project layout
 
 ```
 Pinchpad/
 ├── Sources/
-│   ├── AppMain.swift          # 入口、面板窗口、菜单栏、热角/捏合接线、淡入淡出、背景光晕
-│   ├── AppModel.swift         # 全局状态、数据持久化、图标缓存、拖拽、分页、卸载、导入
-│   ├── Model.swift            # 数据模型与偏好设置
-│   ├── PinchpadView.swift     # 主界面：搜索、网格、分页、文件夹、入场动画
-│   ├── SettingsView.swift     # 设置窗口（通用/手势/外观/应用/关于）
-│   ├── Services.swift         # 应用扫描、卸载相关文件、Dock 固定、全局热键、热角、捏合监听
-│   └── PinchClassifier.swift  # 触控板多指手势判定
+│   ├── AppMain.swift          # Entry point, panel window, menu bar, hot corner/pinch wiring, fades, backdrop glow
+│   ├── AppModel.swift         # Global state, persistence, icon cache, drag & drop, paging, uninstall, import
+│   ├── Model.swift            # Data models and preferences
+│   ├── PinchpadView.swift     # Main UI: search, grid, paging, folders, entrance animation
+│   ├── TrayView.swift         # Liquid Glass organizer, menu bar apps, pins, and app picker
+│   ├── SettingsView.swift     # Settings window (General / Gestures / Appearance / Apps / About)
+│   ├── Services.swift         # App scanning, related-file lookup, Dock pinning, global hotkey, hot corners, pinch monitor
+│   └── PinchClassifier.swift  # Trackpad multi-finger gesture classification
 ├── Tests/
-│   └── PanelTransitionProbe.swift  # 对运行中的 app 做打开/关闭与构建一致性检查
-├── Resources/                 # 菜单栏图标
-├── AppIcon.iconset/           # 应用图标源
+│   ├── PanelTransitionProbe.swift # Full-launcher transitions and build-freshness checks
+│   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
+│   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
+│   └── TrayPlacementProbe.swift   # Two-pixel menu bar gap and window-level checks
+├── Resources/                 # Menu bar icons
+├── AppIcon.iconset/           # App icon sources
 ├── AppIcon.icns
 ├── Info.plist
-├── generate-icon.swift        # 生成应用图标与菜单栏图标
-└── build.sh                   # 编译、组装、签名、校验
+├── generate-icon.swift        # Generates the app icon and menu bar glyph
+└── build.sh                   # Compile, assemble, sign, verify
 ```
 
-## 性能说明
+## Performance notes
 
-- 全屏面板以 1% 不透明度常驻挂载，图标纹理提前光栅化；每次打开只播放合成器动画，不重新提交内容。
-- 打开过渡约 0.3s：背景 0.13s 淡入，图标 `easeOut` 0.22s、每环错峰 30ms 弹出；60Hz 下为满帧动画。
-- 隐藏态空闲 CPU 约 0%，常驻物理内存约 40–50MB。
-- 依赖系统能力：面板隐藏/显示、热键、手势监听均为系统 API，无轮询式主线程动画。
+- The full-screen panel stays mounted at 1% opacity with its icon textures rasterized in advance; opening only plays compositor animations instead of resubmitting content.
+- The full launcher uses compositor fades. The organizer fades in at its final position without crossing the menu bar.
+- Menu bar app discovery runs when the organizer opens and when apps launch or quit, rather than on a continuous polling timer.
+- Timing and resource usage depend on the system, hardware, and app library. Use the probes below to check the current build.
 
-## 测试
+## Testing
 
 ```bash
-swift Tests/PanelTransitionProbe.swift <运行中的 Pinchpad PID> <源码根目录>
+swift Tests/PanelTransitionProbe.swift <running Pinchpad PID> <source root>
+
+# Open the organizer before running these:
+swift Tests/TrayCornerProbe.swift <running Pinchpad PID>
+swift Tests/TrayPlacementProbe.swift <running Pinchpad PID>
+
+# The app must appear in the organizer; this actually clicks and opens it:
+swift Tests/TrayActivationProbe.swift <running Pinchpad PID> "<app name>" <bundleID> mouse
 ```
 
-会验证：构建产物是否比源码新、面板能否按时打开/关闭、以及一些低开销动画实现不变量。运行前需要给终端（或执行测试的程序）授予「系统事件」自动化权限。
+The probes check build freshness, full-launcher transitions, organizer transparency and placement, and app activation. The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions.
 
-## 常见问题
+## Troubleshooting
 
-| 现象 | 处理 |
+| Symptom | Fix |
 |---|---|
-| 构建提示 `Quit the running Pinchpad before rebuilding...` | 先从菜单栏退出正在运行的 Pinchpad |
-| 构建提示 `requires its original signing identity` / `Signing certificate does not match` | 签名目录丢失或被替换：恢复 `signing/` 目录，或同时删除 `Pinchpad.app` 和 `signing/` 后重新构建（会生成新身份，需要重新授予辅助功能） |
-| 捏合手势不生效 | 在「系统设置 → 隐私与安全性 → 辅助功能」中允许 Pinchpad；确认设置里对应的三/四指捏合已开启 |
-| 快捷键无反应 | 快捷键可能被系统或其他应用占用，设置里会给出提示，可更换组合键 |
-| 首次打开稍慢 | 与登录后首次激活 app、初始化键盘焦点有关，是一次性开销 |
-| 面板打开后图标位置/数量不对 | 设置 → 应用 → 重新扫描，或删除 `library.json` 恢复默认布局 |
+| Build says `Quit the running Pinchpad before rebuilding...` | Quit Pinchpad from the menu bar first |
+| Build says `requires its original signing identity` / `Signing certificate does not match` | The signing directory is missing or was replaced: restore `signing/`, or delete both `Pinchpad.app` and `signing/` and rebuild (a new identity is generated and Accessibility must be granted again) |
+| Pinch does not work | Allow Pinchpad under System Settings → Privacy & Security → Accessibility; make sure three/four-finger pinch is enabled in Settings |
+| No apps in the menu bar section | Grant Pinchpad Accessibility permission, then reopen the organizer. This section shows third-party apps with menu bar icons, not every running app |
+| Shortcut does nothing | The combination may be taken by the system or another app; Settings reports conflicts and you can choose another |
+| First open feels slow | One-time cost from the first activation and keyboard focus initialization after login |
+| Wrong icons or positions after opening | Settings → Apps → Rescan, or delete `library.json` to restore the default layout |
 
-## 卸载
+## Uninstall
 
-1. 从菜单栏退出 Pinchpad。
-2. 删除 `Pinchpad.app`。
-3. 删除 `~/Library/Application Support/Pinchpad/`（设置、布局与签名身份都在这里）。
-4. 在「系统设置 → 通用 → 登录项」与「隐私与安全性 → 辅助功能」中移除 Pinchpad。
+1. Quit Pinchpad from the menu bar.
+2. Delete `Pinchpad.app`.
+3. Delete `~/Library/Application Support/Pinchpad/` (settings, layout, and the signing identity live there).
+4. Remove Pinchpad from System Settings → General → Login Items and from Privacy & Security → Accessibility.
 
-## 许可证
+## License
 
-本项目基于 **MIT License** 开源，详见 [LICENSE](LICENSE)。
+Released under the **MIT License**. See [LICENSE](LICENSE).
 
 Copyright (c) 2026 huangsz
