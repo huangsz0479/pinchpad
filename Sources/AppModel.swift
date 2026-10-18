@@ -537,16 +537,18 @@ final class AppModel: ObservableObject {
         case .app(let id): current = app(id)?.effectiveName ?? ""
         case .folder(let id): current = folder(id)?.name ?? ""
         }
-        guard let next = promptText("重命名", value: current), !next.isEmpty else { return }
-        switch slot {
-        case .app(let id):
-            guard let index = apps.firstIndex(where: { $0.id == id }) else { return }
-            apps[index].customName = next
-        case .folder(let id):
-            guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
-            folders[index].name = next
+        promptText("重命名", value: current) { next in
+            guard let next, !next.isEmpty else { return }
+            switch slot {
+            case .app(let id):
+                guard let index = self.apps.firstIndex(where: { $0.id == id }) else { return }
+                self.apps[index].customName = next
+            case .folder(let id):
+                guard let index = self.folders.firstIndex(where: { $0.id == id }) else { return }
+                self.folders[index].name = next
+            }
+            self.persist()
         }
-        persist()
     }
 
     func renameFolder(_ id: UUID, to name: String) {
@@ -647,15 +649,17 @@ final class AppModel: ObservableObject {
         }
         alert.addButton(withTitle: "移到废纸篓")
         alert.addButton(withTitle: "取消")
-        guard runOverPanel(alert) == .alertFirstButtonReturn else { return }
-        var urls = [URL(fileURLWithPath: app.path)]
-        urls.append(contentsOf: related)
-        do {
-            try Trash.move(urls)
-            removeAppCompletely(app.id)
-            notice = "已移到废纸篓。"
-        } catch {
-            notice = "没能移走：\(error.localizedDescription)"
+        presentAlert(alert) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            var urls = [URL(fileURLWithPath: app.path)]
+            urls.append(contentsOf: related)
+            do {
+                try Trash.move(urls)
+                self.removeAppCompletely(app.id)
+                self.notice = "已移到废纸篓。"
+            } catch {
+                self.notice = "没能移走：\(error.localizedDescription)"
+            }
         }
     }
 
@@ -747,12 +751,14 @@ final class AppModel: ObservableObject {
         alert.informativeText = "这会改写 Dock 的列表并重新启动 Dock。"
         alert.addButton(withTitle: "固定")
         alert.addButton(withTitle: "取消")
-        guard runOverPanel(alert) == .alertFirstButtonReturn else { return }
-        do {
-            try DockPin.add(app: app)
-            notice = "已固定到 Dock。"
-        } catch {
-            notice = "没能固定：\(error.localizedDescription)"
+        presentAlert(alert) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            do {
+                try DockPin.add(app: app)
+                self.notice = "已固定到 Dock。"
+            } catch {
+                self.notice = "没能固定：\(error.localizedDescription)"
+            }
         }
     }
 
@@ -1423,13 +1429,15 @@ final class AppModel: ObservableObject {
         )
     }
 
-    /// 全屏面板是 mainMenu+1 级窗口，会盖住普通弹窗，把确认框提到它之上。
-    private func runOverPanel(_ alert: NSAlert) -> NSApplication.ModalResponse {
-        alert.window.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
-        return alert.runModal()
+    private func presentAlert(
+        _ alert: NSAlert,
+        completion: @escaping (NSApplication.ModalResponse) -> Void
+    ) {
+        let parent = AppDelegate.current?.alertParentWindow ?? NSApp.keyWindow
+        PanelAlertPresenter.present(alert, over: parent, completion: completion)
     }
 
-    private func promptText(_ title: String, value: String) -> String? {
+    private func promptText(_ title: String, value: String, completion: @escaping (String?) -> Void) {
         let alert = NSAlert()
         alert.messageText = title
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
@@ -1438,8 +1446,10 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "好")
         alert.addButton(withTitle: "取消")
         alert.window.initialFirstResponder = field
-        guard runOverPanel(alert) == .alertFirstButtonReturn else { return nil }
-        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        presentAlert(alert) { response in
+            guard response == .alertFirstButtonReturn else { completion(nil); return }
+            completion(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     private func persist() {

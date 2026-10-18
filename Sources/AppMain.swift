@@ -43,6 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var swipeIdleWork: DispatchWorkItem?
     private static let coverLevel = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
 
+    var alertParentWindow: NSWindow? {
+        AppModel.shared.isOpen ? panel : NSApp.keyWindow
+    }
+
     override init() {
         super.init()
         AppDelegate.current = self
@@ -395,6 +399,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             installOutsideMonitor()
         } else {
+            if let sheet = panel?.attachedSheet {
+                panel?.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+            }
             panelRevealed = false
             removeOutsideMonitor()
             conceal(token: token)
@@ -807,7 +814,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func closeIfClickedOutside() {
-        guard AppModel.shared.isOpen else { return }
+        guard AppModel.shared.isOpen, panel?.attachedSheet == nil else { return }
         guard !isStatusItemClick() else { return }
         AppModel.shared.closeFromPointer()
     }
@@ -854,6 +861,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return event
         }
+        // Let the sheet own clicks, Escape, and keyboard focus until it finishes.
+        guard panel.attachedSheet == nil else { return event }
         if event.type == .leftMouseUp {
             if AppModel.shared.draggingID != nil {
                 AppModel.shared.scheduleEndDrag()

@@ -120,6 +120,7 @@ Pinchpad/
 ├── Sources/
 │   ├── AppMain.swift          # 入口、面板窗口、菜单栏、热角/捏合接线、淡入淡出、背景光晕
 │   ├── AppModel.swift         # 全局状态、数据持久化、图标缓存、拖拽、分页、卸载、导入
+│   ├── PanelAlertPresenter.swift # 附属于启动面板的原生确认弹窗
 │   ├── Model.swift            # 数据模型与偏好设置
 │   ├── PinchpadView.swift     # 主界面：搜索、网格、分页、文件夹、入场动画
 │   ├── TrayView.swift         # 液态玻璃收纳面板、菜单栏应用、钉选与添加
@@ -128,6 +129,7 @@ Pinchpad/
 │   └── PinchClassifier.swift  # 触控板多指手势判定
 ├── Tests/
 │   ├── PanelTransitionProbe.swift # 完整面板开关、动画与构建一致性检查
+│   ├── AlertPresentationProbe.swift # 全屏/窗口模式的弹窗层级与取消检查
 │   ├── PinchGestureProbe.swift    # 手势识别与三指/四指面板路由检查
 │   ├── TrayActivationProbe.swift  # 图标点击、轻微拖动与辅助功能按压
 │   ├── TrayCornerProbe.swift      # 圆角外侧像素透明度检查
@@ -163,6 +165,11 @@ swift Tests/TrayActivationProbe.swift <运行中的 Pinchpad PID> "<应用名称
 swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
   Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
   -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
+
+# 原生确认框层级检查；测试只取消，不会删除任何内容：
+swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
+  Tests/AlertPresentationProbe.swift -o /tmp/AlertPresentationProbe \
+  && /tmp/AlertPresentationProbe
 ```
 
 会验证构建一致性、完整面板开关、收纳面板的圆角与位置，以及图标是否能打开应用。启动探针还支持 `drift`（轻微拖动）和 `ax`（辅助功能按压）模式。运行测试的终端或宿主程序需要相应的辅助功能、截屏及自动化权限。

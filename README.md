@@ -120,6 +120,7 @@ Pinchpad/
 ├── Sources/
 │   ├── AppMain.swift          # Entry point, panel window, menu bar, hot corner/pinch wiring, fades, backdrop glow
 │   ├── AppModel.swift         # Global state, persistence, icon cache, drag & drop, paging, uninstall, import
+│   ├── PanelAlertPresenter.swift # Native confirmation sheets attached to their launcher
 │   ├── Model.swift            # Data models and preferences
 │   ├── PinchpadView.swift     # Main UI: search, grid, paging, folders, entrance animation
 │   ├── TrayView.swift         # Liquid Glass organizer, menu bar apps, pins, and app picker
@@ -128,6 +129,7 @@ Pinchpad/
 │   └── PinchClassifier.swift  # Trackpad multi-finger gesture classification
 ├── Tests/
 │   ├── PanelTransitionProbe.swift # Full-launcher transitions and build-freshness checks
+│   ├── AlertPresentationProbe.swift # Alert stacking and cancellation in full-screen/windowed modes
 │   ├── PinchGestureProbe.swift    # Gesture recognition and three-/four-finger panel routing
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
@@ -163,6 +165,11 @@ swift Tests/TrayActivationProbe.swift <running Pinchpad PID> "<app name>" <bundl
 swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
   Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
   -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
+
+# Native confirmation layering; the test only cancels, never deletes anything:
+swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
+  Tests/AlertPresentationProbe.swift -o /tmp/AlertPresentationProbe \
+  && /tmp/AlertPresentationProbe
 ```
 
 The probes check build freshness, full-launcher transitions, organizer transparency and placement, and app activation. The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions.
