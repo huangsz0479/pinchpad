@@ -12,10 +12,10 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 
 **Ways to open**
 - Menu bar icon: left-click to toggle the organizer; right-click for Settings and Quit
-- Three-finger pinch inward to open the organizer; spread outward to close it
-- Four-finger pinch inward to open the full launcher; spread outward to close it
-- Either enabled outward-spread gesture dismisses the visible panel, even if it was opened another way
-- Four-finger spread still reaches macOS for Show Desktop; Pinchpad only intercepts the inward app-launcher pinch
+- Three-finger pinch inward opens the organizer
+- Four-finger pinch inward opens the full launcher
+- Either enabled outward-spread gesture dismisses the visible Pinchpad panel, regardless of how it was opened
+- Four-finger spread is passed through to macOS for Show Desktop when enabled in System Settings; Pinchpad only intercepts the inward app-launcher pinch
 - Global keyboard shortcut (default `F4`, configurable) and screen hot corners open the full launcher
 - Three- and four-finger gestures can be enabled independently in Settings
 
@@ -35,8 +35,13 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 - Drag to reorder (dragging to an edge turns the page); drop one app onto another to create a folder
 - `Cmd` + click for multi-selection; create a folder or hide apps in bulk
 - Context menu: open, reveal in Finder, pin to the organizer, rename, hide, pin to Dock, move to Trash
-- Live search filter; hold `Option` and click to uninstall directly (with a confirmation list of related files)
+- Live search filter; hold `Option` and click to review an uninstall confirmation, including related support files
 - “Organize App Layout” and “Import System App Order”
+
+**Confirmation dialogs**
+- Uninstall, rename, and Dock-pinning dialogs use native sheets attached to the launcher, so they stay above it in both full-screen and windowed modes
+- The sheet owns keyboard focus while open; background clicks do not dismiss the launcher beneath it
+- Cancelling leaves the requested change unapplied; closing the launcher also cancels any pending confirmation
 
 **Appearance**
 - Three backdrop styles: wallpaper blur / dimmed / dark
@@ -84,17 +89,24 @@ swift generate-icon.swift <output-iconset-directory> <menubar-icon-output-direct
 |---|---|
 | Open the organizer | Left-click the menu bar icon, or pinch inward with three fingers |
 | Open the full launcher | Four-finger pinch / shortcut (default `F4`) / hot corner / all-apps button in the organizer |
-| Close the organizer | `Esc`, click outside, click the menu bar icon again, or spread three fingers outward |
-| Close the full launcher | `Esc`, click empty space, press the shortcut again, or spread four fingers outward |
+| Close the organizer | `Esc`, click outside, click the menu bar icon again, or use an enabled outward-spread gesture |
+| Close the full launcher | `Esc`, click empty space, press the shortcut again, or use an enabled outward-spread gesture |
+| Show Desktop | Spread the thumb and three fingers outward; enable Show Desktop in macOS Trackpad settings |
 | Pin an app | Click the add tile in the organizer, or use the full launcher's context menu |
 | Unpin an app | Right-click a pinned app and choose the unpin action |
 | Turn pages | `←` `→`, horizontal trackpad swipe, page dots, side arrows |
 | Multi-select | `Cmd` + click |
 | Create a folder | Drag one app onto another, or multi-select and click “New Folder” |
-| Uninstall | `Option` + click (can be disabled in Settings), or right-click → Move to Trash |
+| Request an uninstall | `Option` + click (can be disabled in Settings), or right-click → Move to Trash; review and confirm the dialog |
 | Settings | Right-click the menu bar icon → Settings |
 
 Documentation is available in English and Simplified Chinese. The app interface is currently in Simplified Chinese.
+
+### Gestures and safe removal
+
+Three- and four-finger inward pinches open different Pinchpad panels; an outward spread is not limited to closing the panel opened by the same finger count. The macOS four-finger Show Desktop gesture remains available even when Pinchpad is running. Enable it in **System Settings → Trackpad → More Gestures → Show Desktop**.
+
+Requesting an uninstall does not immediately remove anything. Review the application and any listed support files in the confirmation sheet, then explicitly confirm to move them to Trash. Choose Cancel to leave them untouched. Pinchpad refuses to remove itself or applications under `/System`.
 
 ## Local data
 
@@ -172,7 +184,14 @@ swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
   && /tmp/AlertPresentationProbe
 ```
 
-The probes check build freshness, full-launcher transitions, organizer transparency and placement, and app activation. The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions.
+The probes cover:
+
+- Build freshness and full-launcher opening/closing transitions.
+- Organizer corner transparency, two-pixel menu bar spacing, and app activation.
+- Three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
+- Confirmation sheets appearing above full-screen/windowed launchers, with cancellation leaving the launcher visible.
+
+The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). The gesture probe does not install device hooks or require a running app. The alert probe opens test dialogs and only cancels them; it does not delete anything. Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions for tests that interact with the running app.
 
 ## Troubleshooting
 
@@ -181,6 +200,8 @@ The probes check build freshness, full-launcher transitions, organizer transpare
 | Build says `Quit the running Pinchpad before rebuilding...` | Quit Pinchpad from the menu bar first |
 | Build says `requires its original signing identity` / `Signing certificate does not match` | The signing directory is missing or was replaced: restore `signing/`, or delete both `Pinchpad.app` and `signing/` and rebuild (a new identity is generated and Accessibility must be granted again) |
 | Pinch does not work | Allow Pinchpad under System Settings → Privacy & Security → Accessibility; make sure three/four-finger pinch is enabled in Settings |
+| Four-finger spread does not show the desktop | Enable Show Desktop under System Settings → Trackpad → More Gestures, and use a current Pinchpad build that passes this gesture through to macOS |
+| A confirmation dialog is hidden behind the launcher | Update and rebuild Pinchpad. Current builds attach confirmations as native sheets rather than relying on a manually raised window level |
 | No apps in the menu bar section | Grant Pinchpad Accessibility permission, then reopen the organizer. This section shows third-party apps with menu bar icons, not every running app |
 | Shortcut does nothing | The combination may be taken by the system or another app; Settings reports conflicts and you can choose another |
 | First open feels slow | One-time cost from the first activation and keyboard focus initialization after login |
