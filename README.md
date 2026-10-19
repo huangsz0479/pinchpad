@@ -185,6 +185,9 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
   Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
   -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
 
+# Arrow paging and event delivery without system input or loading the user's library:
+python3 Tests/PageNavigationProbe.py
+
 # Animation contracts and refresh-rate hints without windows or a running app:
 swiftc Sources/IconEntrance.swift Sources/PanelAnimation.swift Tests/PanelAnimationProbe.swift \
   -o /tmp/PanelAnimationProbe && /tmp/PanelAnimationProbe

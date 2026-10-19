@@ -125,12 +125,13 @@ struct PinchpadRoot: View {
             screenEpoch += 1
         }
         .onExitCommand { model.closeTop() }
-        .onKeyPress(.leftArrow) {
+        // 备用键盘处理只响应按下和连按，松开方向键不触发翻页。
+        .onKeyPress(.leftArrow, phases: [.down, .repeat]) { _ in
             guard model.query.isEmpty, model.openFolderID == nil else { return .ignored }
             model.turnPage(-1)
             return .handled
         }
-        .onKeyPress(.rightArrow) {
+        .onKeyPress(.rightArrow, phases: [.down, .repeat]) { _ in
             guard model.query.isEmpty, model.openFolderID == nil else { return .ignored }
             model.turnPage(1)
             return .handled

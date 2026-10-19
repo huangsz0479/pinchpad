@@ -736,7 +736,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installInputMonitor() {
         guard inputMonitor == nil else { return }
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel, .leftMouseDown, .leftMouseUp, .flagsChanged]) { [weak self] event in
-            self?.handleInput(event) ?? event
+            guard let self else { return event }
+            return self.handleInput(event)
         }
     }
 

@@ -185,6 +185,9 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
   Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
   -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
 
+# 不发送系统输入、不读取个人应用库，检查方向键单次翻页与事件传递：
+python3 Tests/PageNavigationProbe.py
+
 # 不创建窗口、不依赖运行中的应用，检查动画与刷新率偏好：
 swiftc Sources/IconEntrance.swift Sources/PanelAnimation.swift Tests/PanelAnimationProbe.swift \
   -o /tmp/PanelAnimationProbe && /tmp/PanelAnimationProbe
