@@ -100,9 +100,29 @@ swift generate-icon.swift <output-iconset-directory> <menubar-icon-output-direct
 | Multi-select | `Cmd` + click |
 | Create a folder | Drag one app onto another, or multi-select and click “New Folder” |
 | Request an uninstall | `Option` + click (can be disabled in Settings), or right-click → Move to Trash; review and confirm the dialog |
+| Adjust pinch sensitivity | Settings → Gestures & Keys → Pinch sensitivity; shared by three- and four-finger gestures |
+| Manage app folders | Settings → Apps & Sources; enable a folder or add a custom location |
 | Settings | Right-click the menu bar icon → Settings |
 
 Documentation is available in English and Simplified Chinese. The app interface is currently in Simplified Chinese.
+
+### Pinch sensitivity
+
+Open **Settings → Gestures & Keys (手势与按键)** and adjust **Pinch sensitivity (捏合灵敏度)**. The five levels are Very Low, Low, Standard, High, and Very High; Standard is the default.
+
+Start with Standard. If pinches trigger accidentally, lower the sensitivity one step to require a more deliberate movement. If intended pinches are missed, raise it one step. Each level filters brief jitter, and you can lift your fingers naturally after pinching without an extra hold.
+
+The same setting applies to both three- and four-finger gestures, takes effect immediately, and is saved across restarts. Enable at least one of these gestures to adjust the slider.
+
+### App library sync
+
+Open **Settings → Apps & Sources (应用与来源)** to choose which folders contribute apps. The default sources are `/Applications`, `/System/Applications`, `/System/Applications/Utilities`, and `~/Applications`; their subfolders are included. Use **Add Folder (添加文件夹…)** for apps kept elsewhere.
+
+- Installing an app in an enabled source adds it to the existing layout automatically, without launching the new app or reopening the panel. Allow the file copy to finish and the changes to settle.
+- Uninstalling an app, or moving it out of all enabled sources, removes its library entry, pinned favorite, and folder references. Empty folders are removed too.
+- Existing apps keep their custom names, hidden states, folders, and order. Newly discovered apps are appended to the layout.
+- Enabling, disabling, adding, or removing a source updates the library immediately. Removing a source from Settings leaves its files untouched.
+- Starting Pinchpad also reconciles installations and removals made while it was closed. **Rescan (重新扫描)** remains available for a manual refresh.
 
 ### Gestures and safe removal
 
@@ -151,6 +171,7 @@ Pinchpad/
 │   ├── IdleResponsivenessProbe.swift # Hidden surfaces and input-thread isolation
 │   ├── AlertPresentationProbe.swift # Alert stacking and cancellation in full-screen/windowed modes
 │   ├── PinchGestureProbe.swift    # Gesture recognition and three-/four-finger panel routing
+│   ├── PageNavigationProbe.py     # Single-step arrow paging and event delivery
 │   ├── AppLibrarySyncProbe.py     # App installation/removal, startup reconciliation, and source changes
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
@@ -230,12 +251,14 @@ The activation probe also supports `drift` (a click with slight pointer movement
 | Build says `Quit the running Pinchpad before rebuilding...` | Quit Pinchpad from the menu bar first |
 | Build says `requires its original signing identity` / `Signing certificate does not match` | The signing directory is missing or was replaced: restore `signing/`, or delete both `Pinchpad.app` and `signing/` and rebuild (a new identity is generated and Accessibility must be granted again) |
 | Pinch does not work | Allow Pinchpad under System Settings → Privacy & Security → Accessibility; make sure three/four-finger pinch is enabled in Settings |
+| Pinches trigger accidentally or are missed | Settings → Gestures & Keys → Pinch sensitivity: lower it for accidental triggers, or raise it for missed pinches; the setting applies to both finger counts |
 | Four-finger spread does not show the desktop | Enable Show Desktop under System Settings → Trackpad → More Gestures, and use a current Pinchpad build that passes this gesture through to macOS |
 | A confirmation dialog is hidden behind the launcher | Update and rebuild Pinchpad. Current builds attach confirmations as native sheets rather than relying on a manually raised window level |
 | No apps in the menu bar section | Grant Pinchpad Accessibility permission, then reopen the organizer. This section shows third-party apps with menu bar icons, not every running app |
 | Shortcut does nothing | The combination may be taken by the system or another app; Settings reports conflicts and you can choose another |
 | First open feels slow | One-time cost from the first activation and keyboard focus initialization after login |
-| Wrong icons or positions after opening | Settings → Apps → Rescan, or delete `library.json` to restore the default layout |
+| A newly installed app is missing, or an uninstalled app still appears | Wait for installation to finish, check its folder is enabled in Settings → Apps & Sources, then choose Rescan if needed; add a custom source for apps stored elsewhere |
+| Want to change the app order | Drag icons, use “Organize App Layout” in Settings → Appearance & Grid, or “Import System App Order” in Settings → Apps & Sources |
 
 ## Uninstall
 
