@@ -64,11 +64,8 @@ final class AppModel: ObservableObject {
     @Published var pinnedAppIDs: [String]
     @Published var pageDirection: Int = 1
     @Published var isOpen = false
-    /// 每次打开时递增：把图标复位成「还没出场」的隐藏状态（无动画）。
-    /// 它会在面板仍不可见时提交，之后 beginEntrance 才真正播放出场动画。
+    /// 复位和播放分开发布，BloomIn 合并观察以支持同一帧打开。
     @Published var entranceReset = 0
-    /// 每次打开时递增：驱动图标从中心向外弹出来的出场动画。
-    /// 和 entranceReset 分开，是为了让「先隐藏、后动画」能分两次提交。
     @Published var bloomID = 0
     @Published var query = ""
     @Published var selection: Set<String> = []
@@ -281,8 +278,6 @@ final class AppModel: ObservableObject {
         // 已经打开时（Dock 图标被再点一次、open -a 等）不要再走一遍打开流程：
         // 否则会把图标复位成隐藏态却不播动画，面板会变成空的。
         guard !isOpen else { return }
-        // 先把图标状态复位成隐藏（无动画），面板此时仍是不可见的预热态，
-        // 这次提交不会被人看到；下一次提交才是真正的出场动画。
         prepareEntrance()
         // 只有在应用未激活时才激活；重复 open 时把省下的激活等待让给淡入。
         if !NSApp.isActive {
@@ -300,13 +295,10 @@ final class AppModel: ObservableObject {
         onOpenChange?()
     }
 
-    /// 复位入场状态（图标瞬间回到「未出场」的隐藏态）。只在面板不可见时调用。
     func prepareEntrance() {
         entranceReset &+= 1
     }
 
-    /// 由 AppDelegate 在面板开始浮现时调用：图标从中心向外一轮一轮弹出来，
-    /// 这段动画就是内容的「出场」本身，而不是内容全显示完之后的补间。
     func beginEntrance() {
         bloomID &+= 1
     }

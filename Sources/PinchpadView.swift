@@ -18,9 +18,8 @@ struct PinchpadRoot: View {
         ZStack {
             VStack(spacing: isWindowed ? 14 : 22) {
                 searchField
-                // 注意：这里不要加 offset/opacity 入场动画。面板渐显由 AppDelegate
-                // 在图层树外层做（纯合成器动画），任何 SwiftUI 属性动画都会让
-                // 渐显期间主线程逐帧重放显示列表，直接掉帧。
+                // 背景由 AppDelegate 淡入；图标在 IconGrid 内按四环出场，
+                // 避免再给整棵界面叠加一层缩放或位移动画。
                 if model.isOpen && model.isScanning && model.apps.isEmpty {
                     ProgressView("正在读取应用")
                         .controlSize(.large)
@@ -469,8 +468,7 @@ private struct JellyPages: View {
             HStack(spacing: 0) {
                 ForEach(Array(model.pages.enumerated()), id: \.element.id) { index, _ in
                     // 只真正实例化当前页前后各一页：翻页动画只需要相邻页，
-                    // 而离屏页如果也挂载，每次打开都会跟着播放入场波纹，
-                    // 页数多时白烧主线程（也占内存）。
+                    // 离屏页不挂载，避免为不可见图标做布局和解码。
                     if abs(index - page) <= 1 {
                         let pageSlots = model.slots(on: index)
                         let capacity = max(model.settings.columns, 1) * max(model.settings.rows, 1)
@@ -563,6 +561,7 @@ private struct IconGrid: View, Equatable {
         var jiggleTick: Int
         var bloomID: Int
         var entranceReset: Int
+        var animatesEntrance: Bool
 
         @MainActor init(_ model: AppModel, slots: [Slot], isActivePage: Bool = true) {
             func local(_ id: String?) -> String? {
@@ -582,6 +581,7 @@ private struct IconGrid: View, Equatable {
             jiggleTick = isOptionActive ? model.jiggleTick : 0
             bloomID = model.bloomID
             entranceReset = model.entranceReset
+            animatesEntrance = isActivePage
         }
     }
 
@@ -608,27 +608,20 @@ private struct IconGrid: View, Equatable {
         let gridWidth = CGFloat(columnCount) * metrics.plate + CGFloat(max(columnCount - 1, 0)) * metrics.columnGap
         let gridHeight = CGFloat(rowCount) * metrics.cellHeight + CGFloat(max(rowCount - 1, 0)) * metrics.rowGap
         // 入场波纹以网格中心为圆心向外扩散，呼应捏合展开的手势。
-        // 按距离分 4 环：每个 SwiftUI 动画视图每帧都会标脏视图树，60 个格子各自动会打满主线程；
-        // 同一环的格子一起进，动画单元降到 4 个。
-        let centerX = Double(columnCount - 1) / 2
-        let centerY = Double(rowCount - 1) / 2
-        let maxDistance = max(sqrt(centerX * centerX + centerY * centerY), 1)
-        let ringCount = 4
+        // 同一环一起合成和出场：动画单元保持为 4 个，不为每个图标单独开动画。
+        let ringCount = IconEntrance.ringCount
         let ringed: [[(index: Int, slot: Slot)]] = {
             var buckets: [[(index: Int, slot: Slot)]] = Array(repeating: [], count: ringCount)
             for (index, slot) in slots.enumerated() {
-                let row = index / columnCount
-                let column = index % columnCount
-                let dx = Double(column) - centerX
-                let dy = Double(row) - centerY
-                let norm = sqrt(dx * dx + dy * dy) / maxDistance
-                buckets[min(Int(norm * Double(ringCount)), ringCount - 1)].append((index, slot))
+                let ring = IconEntrance.ring(for: index, columns: columnCount, rows: rowCount)
+                buckets[ring].append((index, slot))
             }
             return buckets
         }()
         ZStack(alignment: .topLeading) {
             ForEach(0..<ringCount, id: \.self) { ring in
-                BloomIn(bloomID: state.bloomID, delay: Double(ring) * 0.03, entranceReset: state.entranceReset) {
+                BloomIn(bloomID: state.bloomID, delay: Double(ring) * IconEntrance.ringDelay,
+                        entranceReset: state.entranceReset, enabled: state.animatesEntrance) {
                     ZStack(alignment: .topLeading) {
                         ForEach(ringed[ring], id: \.slot.id) { item in
                             let row = item.index / columnCount
@@ -1003,61 +996,63 @@ private struct FolderIcon: View {
     }
 }
 
-/// 图标出场的动画单元：每个环一组，从「还没出场」的隐藏态按 delay 依次弹出。
-/// 动画只改 scale/opacity，都是合成器可以处理的属性；隐藏态用 1% 不透明度
-/// 而不是 0，让图标纹理留在渲染进程里，弹出时不用重新光栅化。
+/// 保留原来的中心向外波纹：每环合成一组，只变化缩放和透明度。
+/// 面板关闭后仍由 AppDelegate 移出显示列表，不保持全屏毛玻璃常驻。
 private struct BloomIn<Content: View>: View {
     /// entranceReset 与 bloomID 必须放在同一个信号里观察：打开面板时两者在同一帧
     /// 变化，分开监听会互相吞掉（复位时顺手记下新的 bloomID，动画就永远不触发）。
-    private struct Signal: Equatable {
-        var reset: Int
-        var bloom: Int
-    }
-
     var bloomID: Int
     var delay: Double
     var entranceReset: Int = 0
+    var enabled = true
     @ViewBuilder var content: Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = true
+    @State private var scheduledSignal: IconEntrance.Signal?
 
     var body: some View {
         content
-            .scaleEffect(appeared ? 1 : 0.82)
+            .compositingGroup()
+            .scaleEffect(appeared ? 1 : IconEntrance.initialScale)
             .opacity(appeared ? 1 : 0.01)
             .onAppear {
                 // 首次挂载（冷启动预热、翻页新挂载的相邻页）直接静态亮相；
                 // 面板隐藏时 AppDelegate 会调用 prepareEntrance() 把它复位成隐藏态。
                 appeared = true
             }
-            .onChange(of: Signal(reset: entranceReset, bloom: bloomID)) { old, new in
-                guard old != new else { return }
-                if new.reset != old.reset {
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { appeared = false }
-                }
-                if new.bloom != old.bloom {
-                    bloomIn()
+            .onChange(of: IconEntrance.Signal(reset: entranceReset, bloom: bloomID)) { old, new in
+                scheduledSignal = nil
+                switch IconEntrance.action(from: old, to: new, enabled: enabled, reduceMotion: reduceMotion) {
+                case .none:
+                    break
+                case .show:
+                    setAppeared(true)
+                case .reset:
+                    setAppeared(false)
+                case .animate:
+                    bloomIn(signal: new)
                 }
             }
+            .onDisappear { scheduledSignal = nil }
     }
 
     /// 先确保处于隐藏态（无动画），下一帧再按环的 delay 弹出。
     /// 刻意不放 .blur：SwiftUI 的 blur 是进程内逐帧重渲染的滤镜，几十个格子
     /// 一起跑会把 CPU 打满；纯 scale/opacity 变换才能跑在合成器里。
-    private func bloomIn() {
-        guard !reduceMotion else {
-            appeared = true
-            return
-        }
+    private func setAppeared(_ value: Bool) {
         var instant = Transaction()
         instant.disablesAnimations = true
-        withTransaction(instant) { appeared = false }
+        withTransaction(instant) { appeared = value }
+    }
+
+    private func bloomIn(signal: IconEntrance.Signal) {
+        setAppeared(false)
+        scheduledSignal = signal
         DispatchQueue.main.async {
-            // 用固定时长的 easeOut 而不是长 spring：位移均匀铺在整段 0.22s 里，
-            // 60fps 下每一帧都有肉眼可见的变化；也不会像长 spring 那样拖出半秒尾巴。
-            withAnimation(.easeOut(duration: 0.22).delay(delay)) {
+            // 关闭或重置后，上一轮排队的入场不能再次把隐藏图标点亮。
+            guard scheduledSignal == signal else { return }
+            scheduledSignal = nil
+            withAnimation(.easeOut(duration: IconEntrance.duration).delay(delay)) {
                 appeared = true
             }
         }

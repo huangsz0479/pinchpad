@@ -462,6 +462,69 @@ private let multitouchCallback: MTFrameCallback = { _, touches, count, _, _ in
     PinchMonitor.shared.handleTouches(touches, count: Int(count))
 }
 
+// Owns the lifetime of the source that handles filtered gesture events.
+final class EventTapRunLoop {
+    private final class State {
+        let source: CFRunLoopSource
+        private let lock = NSLock()
+        private var runLoop: CFRunLoop?
+        private var stopped = false
+
+        init(source: CFRunLoopSource) { self.source = source }
+
+        func run() {
+            let current = CFRunLoopGetCurrent()!
+            lock.lock()
+            guard !stopped else { lock.unlock(); return }
+            runLoop = current
+            CFRunLoopAddSource(current, source, .commonModes)
+            lock.unlock()
+
+            CFRunLoopRun()
+
+            CFRunLoopRemoveSource(current, source, .commonModes)
+            CFRunLoopSourceInvalidate(source)
+            lock.lock()
+            runLoop = nil
+            stopped = true
+            lock.unlock()
+        }
+
+        func stop() {
+            lock.lock()
+            guard !stopped else { lock.unlock(); return }
+            stopped = true
+            let current = runLoop
+            lock.unlock()
+            guard let current else {
+                CFRunLoopSourceInvalidate(source)
+                return
+            }
+            // Queue shutdown as well as waking the loop: stop may race its first run.
+            CFRunLoopPerformBlock(current, CFRunLoopMode.commonModes.rawValue) { [source] in
+                CFRunLoopSourceInvalidate(source)
+                CFRunLoopStop(CFRunLoopGetCurrent())
+            }
+            CFRunLoopWakeUp(current)
+        }
+    }
+
+    private let state: State
+
+    init(source: CFRunLoopSource) {
+        let state = State(source: source)
+        self.state = state
+        // Capture state rather than the owner, so deinit can stop a running worker.
+        let thread = Thread { state.run() }
+        thread.name = "app.local.pinchpad.gestures"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+    }
+
+    func stop() { state.stop() }
+    deinit { stop() }
+}
+
 final class PinchMonitor {
     static let shared = PinchMonitor()
     var onOpen: ((Int) -> Void)?
@@ -487,7 +550,7 @@ final class PinchMonitor {
     }
 
     fileprivate var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var tapRunLoop: EventTapRunLoop?
     private var devices: [UnsafeMutableRawPointer] = []
     private var devicesList: [AnyObject] = []
     private let stateLock = NSLock()
@@ -513,10 +576,9 @@ final class PinchMonitor {
     deinit {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
         }
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
+        tapRunLoop?.stop()
     }
 
     func apply(counts: Set<Int>) {
@@ -628,10 +690,12 @@ final class PinchMonitor {
                 callback: pinchEventCallback,
                 userInfo: nil
             ) {
+                guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+                    CFMachPortInvalidate(tap)
+                    continue
+                }
                 eventTap = tap
-                let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-                runLoopSource = source
-                CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+                tapRunLoop = EventTapRunLoop(source: source)
                 CGEvent.tapEnable(tap: tap, enable: true)
                 return
             }

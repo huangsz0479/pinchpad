@@ -45,7 +45,7 @@ macOS 菜单栏常驻的**应用启动器与收纳面板**。从菜单栏或三�
 
 **外观**
 - 背景三种样式：墙纸模糊 / 压暗 / 深色
-- 打开动画：背景快速淡入，图标按离中心距离分环弹出
+- 打开动画：保留从中心向外的四环图标出场，背景采用原生淡入并按屏幕能力设置刷新率偏好
 - 跟随系统「减弱动态」设置
 
 **系统集成**
@@ -133,6 +133,9 @@ Pinchpad/
 │   ├── AppMain.swift          # 入口、面板窗口、菜单栏、热角/捏合接线、淡入淡出、背景光晕
 │   ├── AppModel.swift         # 全局状态、数据持久化、图标缓存、拖拽、分页、卸载、导入
 │   ├── PanelAlertPresenter.swift # 附属于启动面板的原生确认弹窗
+│   ├── IconEntrance.swift      # 原有图标波纹时序与可见性规则
+│   ├── PanelAnimation.swift     # 合成器过渡与屏幕刷新率适配
+│   ├── LauncherPanelVisibility.swift # 隐藏面板与特效的停用
 │   ├── Model.swift            # 数据模型与偏好设置
 │   ├── PinchpadView.swift     # 主界面：搜索、网格、分页、文件夹、入场动画
 │   ├── TrayView.swift         # 液态玻璃收纳面板、菜单栏应用、钉选与添加
@@ -141,6 +144,8 @@ Pinchpad/
 │   └── PinchClassifier.swift  # 触控板多指手势判定
 ├── Tests/
 │   ├── PanelTransitionProbe.swift # 完整面板开关、动画与构建一致性检查
+│   ├── PanelAnimationProbe.swift # 内存中的动画与刷新率约定检查
+│   ├── IdleResponsivenessProbe.swift # 隐藏窗口与输入线程隔离检查
 │   ├── AlertPresentationProbe.swift # 全屏/窗口模式的弹窗层级与取消检查
 │   ├── PinchGestureProbe.swift    # 手势识别与三指/四指面板路由检查
 │   ├── TrayActivationProbe.swift  # 图标点击、轻微拖动与辅助功能按压
@@ -156,8 +161,10 @@ Pinchpad/
 
 ## 性能说明
 
-- 全屏面板以 1% 不透明度常驻挂载，图标纹理提前光栅化；每次打开只播放合成器动画，不重新提交内容。
-- 完整启动面板使用合成器淡入淡出，收纳面板在最终位置淡入，不跨过顶部菜单栏。
+- 隐藏面板移出显示列表并停用毛玻璃，保留视图和图标缓存。
+- 完整启动面板保留从中心向外的四环图标出场，背景使用原生淡入淡出；仅当前页播放入场，同一环的图标一起合成。收纳面板在最终位置淡入，不跨过顶部菜单栏。
+- 在支持的屏幕上请求优先 120 帧，刷新率偏好不会超过屏幕能力；60 Hz 屏幕最多只能显示 60 帧。
+- 全局手势拦截使用独立运行循环，界面工作不会阻塞全局手势处理。
 - 菜单栏应用在打开收纳面板及应用启动/退出时刷新，不做持续的定时扫描。
 - 实际耗时与资源占用取决于系统、设备和应用数量，可使用以下探针检查当前构建。
 
@@ -178,6 +185,16 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
   Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
   -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
 
+# 不创建窗口、不依赖运行中的应用，检查动画与刷新率偏好：
+swiftc Sources/IconEntrance.swift Sources/PanelAnimation.swift Tests/PanelAnimationProbe.swift \
+  -o /tmp/PanelAnimationProbe && /tmp/PanelAnimationProbe
+
+# 不发送系统输入、不显示窗口，检查输入线程与面板停用：
+swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
+  Sources/Services.swift Sources/LauncherPanelVisibility.swift \
+  Tests/IdleResponsivenessProbe.swift -lsqlite3 \
+  -o /tmp/IdleResponsivenessProbe && /tmp/IdleResponsivenessProbe
+
 # 原生确认框层级检查；测试只取消，不会删除任何内容：
 swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
   Tests/AlertPresentationProbe.swift -o /tmp/AlertPresentationProbe \
@@ -186,6 +203,7 @@ swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
 
 探针覆盖：
 
+- 原有波纹动画的时序与可见性、背景淡入端点、快速开关，以及 60/120/144/240 Hz 的刷新率偏好。内存检查不等同于实际显示帧率，后者需要在目标屏幕上实测。
 - 构建一致性与完整启动面板的打开/关闭过渡。
 - 收纳面板的圆角透明度、菜单栏下方 2px 间距，以及图标是否能打开应用。
 - 三指/四指面板路由、系统「显示桌面」事件放行，以及系统左右/上下滑动的保留。

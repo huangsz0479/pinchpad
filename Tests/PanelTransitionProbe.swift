@@ -1,11 +1,12 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
 // Run against the already-running, signed Pinchpad.app; this never starts another app.
 //
 // 面板的渐显/渐隐现在由 AppDelegate 在内容图层上做 CA 动画（纯合成器），窗口 alpha
-// 本身不再渐变：打开时窗口 alpha 立即到 1，关闭后回到常驻预热态的 0.01。
-// 所以这里验证的是「窗口按时出现/消失」+ 源码里的低开销不变量，而不是窗口 alpha 的逐帧步进。
+// 本身不再渐变：打开时窗口 alpha 立即到 1，关闭后必须移出显示列表。
+// 不能把 alpha 0.01 的常驻全屏毛玻璃当作真正隐藏，否则会拖慢整个桌面。
 guard CommandLine.arguments.count == 3, let pid = Int32(CommandLine.arguments[1]) else {
     fputs("Usage: swift PanelTransitionProbe.swift <running Pinchpad PID> <source root>\n", stderr)
     exit(2)
@@ -46,6 +47,15 @@ func waitForAlpha(_ predicate: (Double) -> Bool, timeout: TimeInterval) -> Doubl
     return nil
 }
 
+func waitForHiddenPanel(timeout: TimeInterval) -> Double? {
+    let started = ProcessInfo.processInfo.systemUptime
+    while ProcessInfo.processInfo.systemUptime - started < timeout {
+        if panelAlpha() == nil { return (ProcessInfo.processInfo.systemUptime - started) * 1_000 }
+        usleep(4_000)
+    }
+    return nil
+}
+
 func assertSource(_ condition: Bool, _ message: String) throws {
     guard condition else {
         throw NSError(domain: "PanelTransitionProbe", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
@@ -56,18 +66,12 @@ var testing = false
 do {
     let view = try String(contentsOf: root.appendingPathComponent("Sources/PinchpadView.swift"), encoding: .utf8)
     let app = try String(contentsOf: root.appendingPathComponent("Sources/AppMain.swift"), encoding: .utf8)
-    let model = try String(contentsOf: root.appendingPathComponent("Sources/AppModel.swift"), encoding: .utf8)
 
     // 渐显必须走内容图层上的合成器动画，窗口模式下才允许窗口 alpha 动画。
-    try assertSource(app.contains("CABasicAnimation(keyPath: \"opacity\")"),
+    try assertSource(app.contains("PanelAnimation.opening("),
                      "Full-screen panel fade must use a compositor-only layer animation")
     try assertSource(app.contains("panel.animator().alphaValue"),
                      "Windowed mode should keep the window-level fade")
-    // 入场波纹必须延后到淡入完成，不能在渐显窗口里跑 SwiftUI 属性动画。
-    try assertSource(model.contains("func beginEntrance()"),
-                     "Entrance ripple must be triggered after the fade completes")
-    try assertSource(!model.contains("bloomID += 1"),
-                     "open() must not start the bloom inside the fade window")
     try assertSource(!view.contains("searchSettled"),
                      "Per-frame search-field slide animation must stay removed")
     try assertSource(!view.contains(".opacity(revealed ? 1 : 0)")
@@ -81,9 +85,13 @@ do {
     try assertSource(app.contains("guard !auroraBuilt || size != auroraBuiltSize"),
                      "Aurora must not be rebuilt on every open")
 
-    let binary = root.deletingLastPathComponent().appendingPathComponent("Pinchpad.app/Contents/MacOS/Pinchpad")
+    guard let bundle = NSRunningApplication(processIdentifier: pid)?.bundleURL else {
+        throw NSError(domain: "PanelTransitionProbe", code: 3,
+                      userInfo: [NSLocalizedDescriptionKey: "Running Pinchpad bundle could not be located"])
+    }
+    let binary = bundle.appendingPathComponent("Contents/MacOS/Pinchpad")
     let built = try binary.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!
-    for file in ["AppMain.swift", "AppModel.swift", "PinchpadView.swift"] {
+    for file in ["AppMain.swift", "AppModel.swift", "PinchpadView.swift", "PanelAnimation.swift", "IconEntrance.swift", "LauncherPanelVisibility.swift"] {
         let source = root.appendingPathComponent("Sources/\(file)")
         let edited = try source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!
         try assertSource(built >= edited, "Running app predates \(file)")
@@ -93,6 +101,7 @@ do {
         try clickTray()
         usleep(500_000)
     }
+    try assertSource(panelAlpha() == nil, "Closed launcher remains in the display list")
     testing = true
 
     // 打开：先量窗口从不可见到可见的延迟，再确认它最终完全显示。
@@ -103,12 +112,12 @@ do {
                       userInfo: [NSLocalizedDescriptionKey: "Panel never became visible"])
     }
     let openLatency = (ProcessInfo.processInfo.systemUptime - openStart) * 1_000
-    // 内容入场波纹约 0.45s 结束，然后才验证关闭。
+    // 四环图标出场结束后再验证关闭。
     usleep(700_000)
 
     let closeStart = ProcessInfo.processInfo.systemUptime
     try clickTray()
-    guard waitForAlpha({ $0 <= 0.02 }, timeout: 0.6) != nil else {
+    guard waitForHiddenPanel(timeout: 0.6) != nil else {
         throw NSError(domain: "PanelTransitionProbe", code: 4,
                       userInfo: [NSLocalizedDescriptionKey: "Panel remained visible after closing"])
     }

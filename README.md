@@ -45,7 +45,7 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 
 **Appearance**
 - Three backdrop styles: wallpaper blur / dimmed / dark
-- Opening animation: the backdrop fades in quickly, icons pop in ring by ring from the center
+- Opening animation: the original four-ring center-out icon wave, with native background fades and display-aware refresh-rate hints
 - Respects the system Reduce Motion setting
 
 **System integration**
@@ -133,6 +133,9 @@ Pinchpad/
 │   ├── AppMain.swift          # Entry point, panel window, menu bar, hot corner/pinch wiring, fades, backdrop glow
 │   ├── AppModel.swift         # Global state, persistence, icon cache, drag & drop, paging, uninstall, import
 │   ├── PanelAlertPresenter.swift # Native confirmation sheets attached to their launcher
+│   ├── IconEntrance.swift      # Original icon-wave timing and visibility rules
+│   ├── PanelAnimation.swift     # Compositor transitions and display-aware frame-rate hints
+│   ├── LauncherPanelVisibility.swift # Suspends hidden panels and effects
 │   ├── Model.swift            # Data models and preferences
 │   ├── PinchpadView.swift     # Main UI: search, grid, paging, folders, entrance animation
 │   ├── TrayView.swift         # Liquid Glass organizer, menu bar apps, pins, and app picker
@@ -141,6 +144,8 @@ Pinchpad/
 │   └── PinchClassifier.swift  # Trackpad multi-finger gesture classification
 ├── Tests/
 │   ├── PanelTransitionProbe.swift # Full-launcher transitions and build-freshness checks
+│   ├── PanelAnimationProbe.swift # In-memory transition and frame-rate contract checks
+│   ├── IdleResponsivenessProbe.swift # Hidden surfaces and input-thread isolation
 │   ├── AlertPresentationProbe.swift # Alert stacking and cancellation in full-screen/windowed modes
 │   ├── PinchGestureProbe.swift    # Gesture recognition and three-/four-finger panel routing
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
@@ -156,8 +161,10 @@ Pinchpad/
 
 ## Performance notes
 
-- The full-screen panel stays mounted at 1% opacity with its icon textures rasterized in advance; opening only plays compositor animations instead of resubmitting content.
-- The full launcher uses compositor fades. The organizer fades in at its final position without crossing the menu bar.
+- Hidden panels leave the display list and suspend their backdrop effects while retaining their view and icon caches.
+- The full launcher preserves the center-out four-ring icon wave and uses native background fades. Only the active page plays the entrance; icons in each ring composite together. The organizer fades in at its final position without crossing the menu bar.
+- Native transitions request a preferred rate of 120 fps when the display supports it, bounded by the display capability. A 60 Hz display can only show up to 60 fps.
+- Gesture filtering runs on a dedicated run loop so UI work does not block global gesture delivery.
 - Menu bar app discovery runs when the organizer opens and when apps launch or quit, rather than on a continuous polling timer.
 - Timing and resource usage depend on the system, hardware, and app library. Use the probes below to check the current build.
 
@@ -178,6 +185,16 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
   Sources/Services.swift Tests/PinchGestureProbe.swift -lsqlite3 \
   -o /tmp/PinchGestureProbe && /tmp/PinchGestureProbe
 
+# Animation contracts and refresh-rate hints without windows or a running app:
+swiftc Sources/IconEntrance.swift Sources/PanelAnimation.swift Tests/PanelAnimationProbe.swift \
+  -o /tmp/PanelAnimationProbe && /tmp/PanelAnimationProbe
+
+# Input isolation and panel shutdown; no system input is posted or windows displayed:
+swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
+  Sources/Services.swift Sources/LauncherPanelVisibility.swift \
+  Tests/IdleResponsivenessProbe.swift -lsqlite3 \
+  -o /tmp/IdleResponsivenessProbe && /tmp/IdleResponsivenessProbe
+
 # Native confirmation layering; the test only cancels, never deletes anything:
 swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
   Tests/AlertPresentationProbe.swift -o /tmp/AlertPresentationProbe \
@@ -186,6 +203,7 @@ swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
 
 The probes cover:
 
+- Original wave timing and visibility rules, background fade endpoints, interrupted transitions, and refresh-rate hints for 60/120/144/240 Hz displays. These in-memory checks do not measure displayed frame rate; that requires validation on the target display.
 - Build freshness and full-launcher opening/closing transitions.
 - Organizer corner transparency, two-pixel menu bar spacing, and app activation.
 - Three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
