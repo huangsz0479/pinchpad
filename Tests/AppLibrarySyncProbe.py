@@ -231,7 +231,8 @@ with tempfile.TemporaryDirectory(prefix="pinchpad-library-sync-") as directory:
     probe.write_text(harness)
     binary = directory / "probe"
     sources = [root / "Sources" / name for name in (
-        "Model.swift", "PinchClassifier.swift", "Services.swift", "PanelAlertPresenter.swift",
+        "Model.swift", "PinchClassifier.swift", "Services.swift", "PanelAlertPresenter.swift", "PagingMotion.swift",
+        "IconEntrance.swift", "EntranceMotion.swift",
     )]
     sources += sorted((root / "Sources").glob("AppLibrary*.swift"))
     subprocess.run([

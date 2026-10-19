@@ -157,10 +157,12 @@ Pinchpad/
 │   ├── AppLibraryMonitor.swift # Event-driven directory monitoring and installation-change debounce
 │   ├── PanelAlertPresenter.swift # Native confirmation sheets attached to their launcher
 │   ├── IconEntrance.swift      # Original icon-wave timing and visibility rules
+│   ├── EntranceMotion.swift    # Entrance-only signals that reuse the mounted icon grids
 │   ├── PanelAnimation.swift     # Compositor transitions and display-aware frame-rate hints
 │   ├── LauncherPanelVisibility.swift # Suspends hidden panels and effects
 │   ├── Model.swift            # Data models and preferences
 │   ├── PinchpadView.swift     # Main UI: search, grid, paging, folders, entrance animation
+│   ├── PagingMotion.swift     # Paging-only observable state for continuous trackpad motion
 │   ├── TrayView.swift         # Liquid Glass organizer, menu bar apps, pins, and app picker
 │   ├── SettingsView.swift     # Settings window (General / Gestures / Appearance / Apps / About)
 │   ├── Services.swift         # App scanning, related-file lookup, Dock pinning, global hotkey, hot corners, pinch monitor
@@ -172,6 +174,9 @@ Pinchpad/
 │   ├── AlertPresentationProbe.swift # Alert stacking and cancellation in full-screen/windowed modes
 │   ├── PinchGestureProbe.swift    # Gesture recognition and three-/four-finger panel routing
 │   ├── PageNavigationProbe.py     # Single-step arrow paging and event delivery
+│   ├── PagingPerformanceProbe.py # Isolated SwiftUI paging workload and geometry checks
+│   ├── OpeningPerformanceProbe.py # Hidden SwiftUI opening workload and icon-wave lifecycle checks
+│   ├── TrayOpeningProbe.py      # Organizer reveal and asynchronous discovery with simulated apps
 │   ├── AppLibrarySyncProbe.py     # App installation/removal, startup reconciliation, and source changes
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
@@ -188,9 +193,12 @@ Pinchpad/
 
 - Hidden panels leave the display list and suspend their backdrop effects while retaining their view and icon caches.
 - The full launcher preserves the center-out four-ring icon wave and uses native background fades. Only the active page plays the entrance; icons in each ring composite together. The organizer fades in at its final position without crossing the menu bar.
-- Native transitions request a preferred rate of 120 fps when the display supports it, bounded by the display capability. A 60 Hz display can only show up to 60 fps.
+- Entrance signals update the ring wrappers directly, reusing the mounted icon grids when reopening the launcher.
+- Native panel fades request a preferred rate of 120 fps when the display supports it, bounded by the display capability. This preference does not measure or guarantee the frame rate of page animations.
+- Continuous trackpad motion updates only the pager. Hit-test geometry is paused during swipes and collected for the current page at rest; dragging enables geometry for adjacent pages so edge turns keep working.
+- A bounded window keeps up to three page grids mounted, including at the ends, avoiding repeated offscreen page creation when browsing a three-page library.
 - Gesture filtering runs on a dedicated run loop so UI work does not block global gesture delivery.
-- Menu bar app discovery runs when the organizer opens and when apps launch or quit, rather than on a continuous polling timer.
+- Menu bar app discovery runs in the background when the organizer opens and when apps launch or quit. The panel opens using cached results; overlapping refreshes are combined and stale results are discarded.
 - App-library synchronization watches enabled directories with macOS file events, combines bursts of installation changes, and scans off the main thread. Idle libraries do not poll; changing scan directories takes effect immediately.
 - Timing and resource usage depend on the system, hardware, and app library. Use the probes below to check the current build.
 
@@ -213,6 +221,15 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
 
 # Arrow paging and event delivery without system input or loading the user's library:
 python3 Tests/PageNavigationProbe.py
+
+# Replay scrolling in an isolated, never-shown SwiftUI fixture; check work counts, not screen FPS:
+python3 Tests/PagingPerformanceProbe.py --check
+
+# Hidden opening/layout and original icon-wave checks; excludes window-server/GPU frame timing:
+python3 Tests/OpeningPerformanceProbe.py --check
+
+# Simulated menu bar discovery; does not inspect or operate other apps:
+python3 Tests/TrayOpeningProbe.py
 
 # App installation/removal and source changes using temporary app bundles; no UI or user library:
 python3 Tests/AppLibrarySyncProbe.py
@@ -237,6 +254,7 @@ The probes cover:
 
 - Original wave timing and visibility rules, background fade endpoints, interrupted transitions, and refresh-rate hints for 60/120/144/240 Hz displays. These in-memory checks do not measure displayed frame rate; that requires validation on the target display.
 - Build freshness and full-launcher opening/closing transitions.
+- Continuous swipe isolation, actual page offsets, restored hit-test geometry and page-navigation behavior in a hidden SwiftUI fixture. Its timings describe event handling and forced layout, excluding visible-window composition and GPU work.
 - Organizer corner transparency, two-pixel menu bar spacing, Dock clearance, and app activation.
 - Five sensitivity levels, live updates and preference migration; three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
 - Automatic installation/removal, offline startup changes, nested and recreated sources, path aliases, app moves, preserved metadata/layout, stale-scan rejection, and idle behavior. The library probe only creates/removes temporary fixtures.

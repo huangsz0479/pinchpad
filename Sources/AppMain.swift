@@ -839,14 +839,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if phase.contains(.began) {
             swipeAccum = 0
             swipeSamples = []
-            model.swipeOffset = 0
-            model.swiping = true
-        } else if !model.swiping, phase.contains(.changed) || phase.contains(.stationary) {
-            swipeAccum = model.swipeOffset
+            model.paging.offset = 0
+            model.paging.isSwiping = true
+        } else if !model.paging.isSwiping, phase.contains(.changed) || phase.contains(.stationary) {
+            swipeAccum = model.paging.offset
             swipeSamples = []
-            model.swiping = true
+            model.paging.isSwiping = true
         }
-        guard model.swiping else { return event }
+        guard model.paging.isSwiping else { return event }
         swipeAccum += dx
         swipeSamples.append((event.timestamp, dx))
         swipeSamples = swipeSamples.filter { event.timestamp - $0.0 < 0.12 }
@@ -856,7 +856,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let atStart = model.clampedPage <= 0
         let atEnd = model.clampedPage >= model.pages.count - 1
         if (atStart && offset > 0) || (atEnd && offset < 0) { offset *= 0.42 }
-        model.swipeOffset = max(-width, min(width, offset))
+        model.paging.offset = max(-width, min(width, offset))
 
         swipeIdleWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.settleSwipe() }
@@ -873,7 +873,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         swipeIdleWork?.cancel()
         swipeIdleWork = nil
         let model = AppModel.shared
-        guard model.swiping else { return }
+        guard model.paging.isSwiping else { return }
         let width = max(panel?.frame.width ?? 0, 1)
         let span = max((swipeSamples.last?.0 ?? 0) - (swipeSamples.first?.0 ?? 0), 0.03)
         let velocity = swipeSamples.reduce(0) { $0 + $1.1 } / span
@@ -883,8 +883,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? .easeOut(duration: 0.15)
             : .spring(response: 0.42, dampingFraction: 0.84)
         withAnimation(settle) {
-            model.swiping = false
-            model.swipeOffset = 0
+            model.paging.isSwiping = false
+            model.paging.offset = 0
             if dragged || flick {
                 model.turnPage((dragged ? swipeAccum : velocity) > 0 ? -1 : 1)
             }

@@ -454,6 +454,12 @@ private struct GridMetrics: Equatable {
 
 private struct JellyPages: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var paging: PagingMotion
+
+    init(model: AppModel) {
+        self.model = model
+        self.paging = model.paging
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -466,11 +472,14 @@ private struct JellyPages: View {
                 showsNames: !model.settings.hideNames
             )
             let page = model.clampedPage
+            let residentCount = min(model.pages.count, 3)
+            let residentStart = min(max(page - 1, 0), max(model.pages.count - residentCount, 0))
+            let residentPages = residentStart..<(residentStart + residentCount)
             HStack(spacing: 0) {
                 ForEach(Array(model.pages.enumerated()), id: \.element.id) { index, _ in
-                    // 只真正实例化当前页前后各一页：翻页动画只需要相邻页，
-                    // 离屏页不挂载，避免为不可见图标做布局和解码。
-                    if abs(index - page) <= 1 {
+                    // 最多保留三页，窗口在首尾向内夹紧；三页应用库来回翻页时，
+                    // 不再于动画开始的一刻卸载、重建另一端暂时不可见的整页图标。
+                    if residentPages.contains(index) {
                         let pageSlots = model.slots(on: index)
                         let capacity = max(model.settings.columns, 1) * max(model.settings.rows, 1)
                         let lastPageIsShort = index == model.pages.count - 1 && pageSlots.count < capacity
@@ -480,7 +489,11 @@ private struct JellyPages: View {
                             metrics: metrics,
                             columns: model.settings.columns,
                             pinsToStart: lastPageIsShort,
-                            state: IconGrid.State(model, slots: pageSlots, isActivePage: index == page)
+                            state: IconGrid.State(
+                                model, slots: pageSlots, isActivePage: index == page,
+                                tracksSlotFrames: !paging.isSwiping
+                                    && (index == page || (model.draggingID != nil && abs(index - page) <= 1))
+                            )
                         )
                         .equatable()
                         .frame(width: width, height: geo.size.height)
@@ -490,15 +503,15 @@ private struct JellyPages: View {
                     }
                 }
             }
-            .offset(x: -CGFloat(page) * width + model.swipeOffset)
+            .offset(x: -CGFloat(page) * width + paging.offset)
             .animation(
                 model.draggingID != nil ? .easeOut(duration: 0.16)
-                    : (model.swiping ? nil : .spring(response: 0.42, dampingFraction: 0.84)),
+                    : (paging.isSwiping ? nil : .spring(response: 0.42, dampingFraction: 0.84)),
                 value: page
             )
             .animation(
-                model.swiping ? nil : .spring(response: 0.42, dampingFraction: 0.84),
-                value: model.swipeOffset
+                paging.isSwiping ? nil : .spring(response: 0.42, dampingFraction: 0.84),
+                value: paging.offset
             )
             .frame(width: width, height: geo.size.height, alignment: .leading)
             .clipped()
@@ -560,11 +573,10 @@ private struct IconGrid: View, Equatable {
         var hideNames: Bool
         var isOptionActive: Bool
         var jiggleTick: Int
-        var bloomID: Int
-        var entranceReset: Int
         var animatesEntrance: Bool
+        var tracksSlotFrames: Bool
 
-        @MainActor init(_ model: AppModel, slots: [Slot], isActivePage: Bool = true) {
+        @MainActor init(_ model: AppModel, slots: [Slot], isActivePage: Bool = true, tracksSlotFrames: Bool = true) {
             func local(_ id: String?) -> String? {
                 guard let id, slots.contains(where: { $0.id == id }) else { return nil }
                 return id
@@ -576,13 +588,10 @@ private struct IconGrid: View, Equatable {
             libraryRevision = model.libraryRevision
             hideNames = model.settings.hideNames
             // Option 抖动只给当前页：离屏页不需要逐帧重绘。
-            // bloomID 则保持各页一致，否则翻页时「0 → 真实 bloomID」会被
-            // BloomIn 当成一次新的入场波纹，出现莫名其妙的缩放/淡入。
             isOptionActive = isActivePage && model.isOptionPressed && model.settings.optionClickUninstall
             jiggleTick = isOptionActive ? model.jiggleTick : 0
-            bloomID = model.bloomID
-            entranceReset = model.entranceReset
             animatesEntrance = isActivePage
+            self.tracksSlotFrames = tracksSlotFrames
         }
     }
 
@@ -621,8 +630,8 @@ private struct IconGrid: View, Equatable {
         }()
         ZStack(alignment: .topLeading) {
             ForEach(0..<ringCount, id: \.self) { ring in
-                BloomIn(bloomID: state.bloomID, delay: Double(ring) * IconEntrance.ringDelay,
-                        entranceReset: state.entranceReset, enabled: state.animatesEntrance) {
+                BloomIn(entrance: model.entrance, delay: Double(ring) * IconEntrance.ringDelay,
+                        enabled: state.animatesEntrance) {
                     ZStack(alignment: .topLeading) {
                         ForEach(ringed[ring], id: \.slot.id) { item in
                             let row = item.index / columnCount
@@ -644,11 +653,13 @@ private struct IconGrid: View, Equatable {
         }
         .frame(width: gridWidth, height: gridHeight, alignment: .topLeading)
         .background {
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: SlotFramesKey.self,
-                    value: targetFrames(origin: geo.frame(in: .named("pad")).origin, columnCount: columnCount, strideX: strideX, strideY: strideY)
-                )
+            if state.tracksSlotFrames {
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: SlotFramesKey.self,
+                        value: targetFrames(origin: geo.frame(in: .named("pad")).origin, columnCount: columnCount, strideX: strideX, strideY: strideY)
+                    )
+                }
             }
         }
         .padding(Self.overflowPadding)
@@ -837,7 +848,7 @@ private struct SlotCell: View, Equatable {
             DragGesture(minimumDistance: 8, coordinateSpace: .named("pad"))
                 .onChanged { _ in
                     if model.draggingID == nil {
-                        model.beginDrag(slot.id)
+                        model.beginDrag(slot.id, iconWidth: plate)
                     }
                 }
         )
@@ -1000,16 +1011,20 @@ private struct FolderIcon: View {
 /// 保留原来的中心向外波纹：每环合成一组，只变化缩放和透明度。
 /// 面板关闭后仍由 AppDelegate 移出显示列表，不保持全屏毛玻璃常驻。
 private struct BloomIn<Content: View>: View {
-    /// entranceReset 与 bloomID 必须放在同一个信号里观察：打开面板时两者在同一帧
-    /// 变化，分开监听会互相吞掉（复位时顺手记下新的 bloomID，动画就永远不触发）。
-    var bloomID: Int
+    /// 复位和播放合并观察，以支持同一帧打开；所有页共享信号，翻页不会重播。
+    @ObservedObject var entrance: EntranceMotion
     var delay: Double
-    var entranceReset: Int = 0
+    var tracksResets = true
     var enabled = true
     @ViewBuilder var content: Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = true
     @State private var scheduledSignal: IconEntrance.Signal?
+
+    private var signal: IconEntrance.Signal {
+        IconEntrance.Signal(reset: tracksResets ? entrance.signal.reset : 0,
+                            bloom: entrance.signal.bloom)
+    }
 
     var body: some View {
         content
@@ -1021,7 +1036,7 @@ private struct BloomIn<Content: View>: View {
                 // 面板隐藏时 AppDelegate 会调用 prepareEntrance() 把它复位成隐藏态。
                 appeared = true
             }
-            .onChange(of: IconEntrance.Signal(reset: entranceReset, bloom: bloomID)) { old, new in
+            .onChange(of: signal) { old, new in
                 scheduledSignal = nil
                 switch IconEntrance.action(from: old, to: new, enabled: enabled, reduceMotion: reduceMotion) {
                 case .none:
@@ -1145,7 +1160,8 @@ private struct FolderCover: View {
                                 ForEach(0..<columns, id: \.self) { column in
                                     let index = row * columns + column
                                     if appIDs.indices.contains(index) {
-                                        BloomIn(bloomID: model.bloomID, delay: Double(index) * 0.025) {
+                                        BloomIn(entrance: model.entrance, delay: Double(index) * 0.025,
+                                                tracksResets: false) {
                                             SlotCell(slot: .app(appIDs[index]), model: model, iconSide: 104, plate: 132)
                                                 .equatable()
                                                 .frame(width: cellWidth, height: cellHeight)

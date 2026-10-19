@@ -157,10 +157,12 @@ Pinchpad/
 │   ├── AppLibraryMonitor.swift # 应用目录变动监听与安装事件防抖
 │   ├── PanelAlertPresenter.swift # 附属于启动面板的原生确认弹窗
 │   ├── IconEntrance.swift      # 原有图标波纹时序与可见性规则
+│   ├── EntranceMotion.swift    # 独立入场信号，复用已挂载的图标网格
 │   ├── PanelAnimation.swift     # 合成器过渡与屏幕刷新率适配
 │   ├── LauncherPanelVisibility.swift # 隐藏面板与特效的停用
 │   ├── Model.swift            # 数据模型与偏好设置
 │   ├── PinchpadView.swift     # 主界面：搜索、网格、分页、文件夹、入场动画
+│   ├── PagingMotion.swift     # 仅由翻页区域观察的连续滑动状态
 │   ├── TrayView.swift         # 液态玻璃收纳面板、菜单栏应用、钉选与添加
 │   ├── SettingsView.swift     # 设置窗口（通用/手势/外观/应用/关于）
 │   ├── Services.swift         # 应用扫描、卸载相关文件、Dock 固定、全局热键、热角、捏合监听
@@ -172,6 +174,9 @@ Pinchpad/
 │   ├── AlertPresentationProbe.swift # 全屏/窗口模式的弹窗层级与取消检查
 │   ├── PinchGestureProbe.swift    # 手势识别与三指/四指面板路由检查
 │   ├── PageNavigationProbe.py     # 方向键单次翻页与事件传递检查
+│   ├── PagingPerformanceProbe.py # 隔离的 SwiftUI 翻页开销与命中区域检查
+│   ├── OpeningPerformanceProbe.py # 隐藏容器中的打开开销与图标波纹生命周期检查
+│   ├── TrayOpeningProbe.py      # 使用模拟应用检查收纳面板打开与异步刷新
 │   ├── AppLibrarySyncProbe.py     # 安装/卸载自动同步、启动校准与扫描目录变化检查
 │   ├── TrayActivationProbe.swift  # 图标点击、轻微拖动与辅助功能按压
 │   ├── TrayCornerProbe.swift      # 圆角外侧像素透明度检查
@@ -188,9 +193,12 @@ Pinchpad/
 
 - 隐藏面板移出显示列表并停用毛玻璃，保留视图和图标缓存。
 - 完整启动面板保留从中心向外的四环图标出场，背景使用原生淡入淡出；仅当前页播放入场，同一环的图标一起合成。收纳面板在最终位置淡入，不跨过顶部菜单栏。
-- 在支持的屏幕上请求优先 120 帧，刷新率偏好不会超过屏幕能力；60 Hz 屏幕最多只能显示 60 帧。
+- 入场信号直接更新波纹动画层，重新打开时复用已经挂载的图标网格。
+- 面板淡入淡出会在支持的屏幕上请求优先 120 帧，刷新率偏好不会超过屏幕能力；该偏好不代表已经测得或保证翻页动画达到相同帧率。
+- 触控板连续滑动只更新翻页区域；滑动期间暂停图标命中区域计算，静止时只收集当前页，拖拽时恢复相邻页坐标以支持边缘翻页。
+- 最多缓存连续三页，首尾位置也保持这个缓存窗口，避免三页应用库来回翻页时反复创建暂时不可见的整页图标。
 - 全局手势拦截使用独立运行循环，界面工作不会阻塞全局手势处理。
-- 菜单栏应用在打开收纳面板及应用启动/退出时刷新，不做持续的定时扫描。
+- 菜单栏应用在打开收纳面板及应用启动/退出时后台刷新；面板先显示缓存，重叠请求会合并，过期结果不会覆盖新状态。
 - 应用库通过 macOS 文件事件监听启用的目录，合并安装过程中的连续变化后在后台扫描；空闲时不轮询，扫描目录的启用、停用和增删会立即生效。
 - 实际耗时与资源占用取决于系统、设备和应用数量，可使用以下探针检查当前构建。
 
@@ -213,6 +221,15 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
 
 # 不发送系统输入、不读取个人应用库，检查方向键单次翻页与事件传递：
 python3 Tests/PageNavigationProbe.py
+
+# 在独立且不显示的 SwiftUI 容器中回放滑动，检查更新量，不测屏幕实际帧率：
+python3 Tests/PagingPerformanceProbe.py --check
+
+# 隐藏容器中的打开/布局与原有波纹检查，不测窗口服务器或 GPU 的实际帧率：
+python3 Tests/OpeningPerformanceProbe.py --check
+
+# 模拟菜单栏查询，不读取或操作其他应用界面：
+python3 Tests/TrayOpeningProbe.py
 
 # 只创建临时应用包，不操作界面或个人应用库，检查安装/卸载与扫描目录同步：
 python3 Tests/AppLibrarySyncProbe.py
@@ -237,6 +254,7 @@ swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
 
 - 原有波纹动画的时序与可见性、背景淡入端点、快速开关，以及 60/120/144/240 Hz 的刷新率偏好。内存检查不等同于实际显示帧率，后者需要在目标屏幕上实测。
 - 构建一致性与完整启动面板的打开/关闭过渡。
+- 隔离 SwiftUI 容器中的连续滑动更新范围、实际页面位移、命中区域恢复和翻页行为；耗时仅涵盖输入处理及强制布局，不包含可见窗口合成和 GPU 开销。
 - 收纳面板的圆角透明度、菜单栏下方 2px 间距、避开 Dock，以及图标是否能打开应用。
 - 五档灵敏度、即时调整和旧设置迁移；三指/四指面板路由、系统「显示桌面」事件放行，以及系统左右/上下滑动的保留。
 - 安装/卸载自动同步、关闭期间的变化、嵌套与重建的目录、路径别名、应用移动、元数据与布局保留、过期扫描结果丢弃及空闲行为；应用库探针只增删临时测试文件。

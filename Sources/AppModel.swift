@@ -69,9 +69,7 @@ final class AppModel: ObservableObject {
     @Published var pinnedAppIDs: [String]
     @Published var pageDirection: Int = 1
     @Published var isOpen = false
-    /// 复位和播放分开发布，BloomIn 合并观察以支持同一帧打开。
-    @Published var entranceReset = 0
-    @Published var bloomID = 0
+    let entrance = EntranceMotion()
     @Published var query = ""
     @Published var selection: Set<String> = []
     @Published var openFolderID: UUID?
@@ -105,8 +103,7 @@ final class AppModel: ObservableObject {
     }
     @Published var jiggleTick = 0
     private var jiggleTimer: Timer?
-    @Published var swipeOffset: CGFloat = 0
-    @Published var swiping = false
+    let paging = PagingMotion()
     @Published var iconRevision = 0
     private(set) var libraryRevision = 0
 
@@ -303,11 +300,11 @@ final class AppModel: ObservableObject {
     }
 
     func prepareEntrance() {
-        entranceReset &+= 1
+        entrance.prepare()
     }
 
     func beginEntrance() {
-        bloomID &+= 1
+        entrance.play()
     }
 
     func close() {
@@ -317,8 +314,8 @@ final class AppModel: ObservableObject {
         if draggingID != nil {
             endDrag()
         }
-        swipeOffset = 0
-        swiping = false
+        paging.offset = 0
+        paging.isSwiping = false
         isOpen = false
         onOpenChange?()
     }
@@ -483,11 +480,13 @@ final class AppModel: ObservableObject {
     }
 
     func noteSlotFrames(_ frames: [String: CGRect]) {
+        // 滑动时暂停收集，保留上一份命中区域；收尾恢复后立即接收最新坐标。
+        if paging.isSwiping && settings.browsing != .scroll && query.isEmpty { return }
         slotFrames = frames
     }
 
-    func beginDrag(_ id: String) {
-        guard draggingID == nil, query.isEmpty, openFolderID == nil else { return }
+    func beginDrag(_ id: String, iconWidth: CGFloat? = nil) {
+        guard draggingID == nil, !paging.isSwiping, query.isEmpty, openFolderID == nil else { return }
         adoptCustomOrder()
         draggingID = id
         folderHoverID = nil
@@ -502,7 +501,7 @@ final class AppModel: ObservableObject {
         previewIndex = nil
         pendingGap = nil
         pendingGapMark = nil
-        showDragImage(for: id)
+        showDragImage(for: id, iconWidth: iconWidth)
         edgeTimer?.invalidate()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.trackPointerDrag() }
@@ -687,16 +686,17 @@ final class AppModel: ObservableObject {
         pinnedAppIDs.compactMap { app($0) }
     }
 
-    /// 收纳面板的「菜单栏」区：每次打开面板时从 NSWorkspace 现取，
-    /// 并跟着启动/退出通知刷新。按名称排序，当前最前面的应用排第一。
+    /// 收纳面板先显示缓存，再异步刷新菜单栏图标，按屏幕上的左右顺序排列。
     @Published var runningApps: [RunningApp] = []
+    private var runningAppsRefreshTask: Task<Void, Never>?
+    private var runningAppsRefreshGeneration = 0
 
     /// 托盘「菜单栏」区只收真正在菜单栏有图标的应用——读进程的
     /// AXExtrasMenuBar，第一个子项就是它的图标；顺路拿回图标元素
     /// 和屏幕上 x 坐标：x 用来按菜单栏真实左右顺序排，元素留下来
     /// 给点按时直接 press 真图标。
-    private func menuBarItem(of app: NSRunningApplication) -> (item: AXUIElement, x: CGFloat)? {
-        let ax = AXUIElementCreateApplication(app.processIdentifier)
+    private nonisolated static func menuBarItem(processID: pid_t) -> (item: AXUIElement, x: CGFloat)? {
+        let ax = AXUIElementCreateApplication(processID)
         var extras: CFTypeRef?
         guard AXUIElementCopyAttributeValue(ax, "AXExtrasMenuBar" as CFString, &extras) == .success,
               let bar = extras else { return nil }
@@ -725,15 +725,38 @@ final class AppModel: ObservableObject {
     }
 
     func refreshRunningApps() {
+        runningAppsRefreshGeneration &+= 1
         var seen = Set<String>()
-        var list: [RunningApp] = []
-        for app in NSWorkspace.shared.runningApplications {
-            guard userFacing(app), seen.insert(app.bundleIdentifier!).inserted,
-                  let (item, x) = menuBarItem(of: app) else { continue }
-            list.append(RunningApp(application: app, menuBarItem: item, menuBarX: x))
+        let candidates = NSWorkspace.shared.runningApplications.filter {
+            userFacing($0) && seen.insert($0.bundleIdentifier!).inserted
         }
-        // 按真实菜单栏图标的左右顺序排，跟任务栏视觉一致。
-        runningApps = list.sorted { $0.menuBarX < $1.menuBarX }
+        let validPIDs = Set(candidates.map(\.processIdentifier))
+        let cached = runningApps.filter { validPIDs.contains($0.application.processIdentifier) }
+        if cached.count != runningApps.count { runningApps = cached }
+
+        // AX 跨进程查询可能很慢；只把 PID 交给后台，应用对象始终留在主线程。
+        // 启动/退出或再次打开只合并一次待刷新请求，不并行堆积 AX 查询。
+        guard runningAppsRefreshTask == nil else { return }
+        let generation = runningAppsRefreshGeneration
+        let processIDs = candidates.map(\.processIdentifier)
+        runningAppsRefreshTask = Task { @MainActor in
+            let items = await Task.detached(priority: .userInitiated) {
+                processIDs.compactMap { processID -> (pid: pid_t, item: AXUIElement, x: CGFloat)? in
+                    guard let (item, x) = Self.menuBarItem(processID: processID) else { return nil }
+                    return (processID, item, x)
+                }.sorted { $0.x < $1.x }
+            }.value
+            self.runningAppsRefreshTask = nil
+            guard generation == self.runningAppsRefreshGeneration else {
+                self.refreshRunningApps()
+                return
+            }
+            let applications = Dictionary(uniqueKeysWithValues: candidates.map { ($0.processIdentifier, $0) })
+            self.runningApps = items.compactMap { item in
+                guard let app = applications[item.pid], self.userFacing(app) else { return nil }
+                return RunningApp(application: app, menuBarItem: item.item, menuBarX: item.x)
+            }
+        }
     }
 
     /// 钉选应用是否正在运行——托盘在图标角上画小圆点。
@@ -1214,14 +1237,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func showDragImage(for id: String) {
+    private func showDragImage(for id: String, iconWidth: CGFloat? = nil) {
         let image: NSImage
         if case .app(let appID) = slot(id), let app = app(appID) {
             image = icon(for: app)
         } else {
             image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: nil) ?? NSImage()
         }
-        let side = max(slotFrames[id]?.width ?? 108, 72)
+        // 切页回弹中的旧页可能已暂停坐标收集，优先使用手势所在格子的实际尺寸。
+        let side = max(iconWidth ?? slotFrames[id]?.width ?? 108, 72)
         let panel = dragPanel ?? makeDragPanel()
         dragPanel = panel
         let view = panel.contentView as? NSImageView
