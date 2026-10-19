@@ -10,34 +10,16 @@ struct TrayView: View {
     var liquidGlass = false
     /// 需要收起面板时调用（启动应用、跳全屏面板等）。
     var onClose: () -> Void
-    /// 内容尺寸变化（钉选增删、运行中应用增减、进出添加模式）时让外层重新算面板尺寸。
-    var onContentChange: () -> Void
-
     @State private var adding = false
     @State private var query = ""
     @FocusState private var searchFocused: Bool
 
-    static let contentWidth: CGFloat = 332
-    private static let columns = 4
-    private static let cellWidth: CGFloat = 64
-    private static let cellHeight: CGFloat = 70
+    static let contentWidth: CGFloat = 460
+    private static let columns = 5
     private static let cardPadding: CGFloat = 10
     private static let cardSpacing: CGFloat = 8
     private static let edgePadding: CGFloat = 10
     private static let footerHeight: CGFloat = 40
-    /// 内容再高就改滚动，面板不超过一屏的舒服高度。
-    private static let maxBodyHeight: CGFloat = 430
-
-    static func contentHeight(pinned: Int, running: Int) -> CGFloat {
-        var body = edgePadding * 2 + cardHeight(forCount: pinned + 1) // +1 是尾部「＋」添加格
-        if running > 0 { body += cardHeight(forCount: running) + cardSpacing }
-        return min(body, maxBodyHeight) + footerHeight
-    }
-
-    private static func cardHeight(forCount count: Int) -> CGFloat {
-        let rows = max(1, Int(ceil(Double(count) / Double(columns))))
-        return 22 + cardPadding * 2 + CGFloat(rows) * cellHeight
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,21 +30,18 @@ struct TrayView: View {
             }
             footer
         }
-        .frame(width: Self.contentWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay {
             if !liquidGlass {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
             }
         }
-        .onChange(of: model.pinnedAppIDs) { _, _ in onContentChange() }
-        .onChange(of: model.runningApps) { _, _ in onContentChange() }
         .onChange(of: adding) { _, on in
             if on {
                 query = ""
                 searchFocused = true
             }
-            onContentChange()
         }
     }
 

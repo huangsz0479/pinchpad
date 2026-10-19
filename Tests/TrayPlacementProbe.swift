@@ -10,15 +10,16 @@ let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) a
 guard let tray = windows.first(where: {
     let bounds = $0[kCGWindowBounds as String] as? [String: NSNumber] ?? [:]
     return ($0[kCGWindowOwnerPID as String] as? Int32) == pid
-        && bounds["Width"]?.intValue == 332
+        && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.mainMenu.rawValue - 1
         && (bounds["Height"]?.intValue ?? 0) > 100
 }), let bounds = tray[kCGWindowBounds as String] as? [String: NSNumber],
    let x = bounds["X"]?.doubleValue, let y = bounds["Y"]?.doubleValue,
+   let width = bounds["Width"]?.doubleValue,
    let height = bounds["Height"]?.doubleValue else {
     fputs("FAIL: open the tray before running the probe\n", stderr)
     exit(1)
 }
-let frame = NSRect(x: x, y: primaryScreen.frame.maxY - y - height, width: 332, height: height)
+let frame = NSRect(x: x, y: primaryScreen.frame.maxY - y - height, width: width, height: height)
 guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) }) else {
     fputs("FAIL: tray is outside all screens\n", stderr)
     exit(1)
@@ -27,10 +28,14 @@ let menuBottom = min(screen.visibleFrame.maxY,
                      screen.frame.maxY - max(NSStatusBar.system.thickness, screen.safeAreaInsets.top))
 let gap = menuBottom - frame.maxY
 let expectedGap = 2 / screen.backingScaleFactor
+let expectedWidth = min(460, max(1, screen.visibleFrame.width - 12))
+let bottomGap = frame.minY - screen.visibleFrame.minY
+let expectedBottomGap = 6 + 200 / screen.backingScaleFactor
 let level = (tray[kCGWindowLayer as String] as? Int) ?? Int.max
-print("menu-bar gap: \(gap)pt; tray level: \(level); menu level: \(NSWindow.Level.mainMenu.rawValue)")
-guard abs(gap - expectedGap) < 0.01, level < NSWindow.Level.mainMenu.rawValue else {
-    fputs("FAIL: tray must sit exactly 2 screen pixels below the menu bar and below its window level\n", stderr)
+print("menu-bar gap: \(gap)pt; bottom gap: \(bottomGap)pt; width: \(width)pt; tray level: \(level)")
+guard abs(gap - expectedGap) < 0.01, abs(bottomGap - expectedBottomGap) < 0.01,
+      abs(width - expectedWidth) < 0.01, level < NSWindow.Level.mainMenu.rawValue else {
+    fputs("FAIL: tray must be 460pt wide (or fit the screen), start 2 pixels below the menu bar, and end 6pt plus 200 screen pixels above the usable screen bottom\n", stderr)
     exit(1)
 }
-print("PASS: tray does not cover the menu bar")
+print("PASS: wider tray fits the usable screen height without covering the menu bar or Dock")

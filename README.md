@@ -25,7 +25,7 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 - Click the add tile to search and pin apps directly, or pin them from the full launcher's context menu
 - Click an icon to open or bring its app forward; right-click to unpin it or open a menu bar app's own menu
 - Native Liquid Glass on macOS 26 and later, with a system-material fallback on older versions
-- Sits two screen pixels below the menu bar; click outside or press `Esc` to dismiss
+- A 460-point-wide panel with five app columns starts two screen pixels below the menu bar and ends six points plus 200 screen pixels above the Dock area; click outside or press `Esc` to dismiss
 - Does not move or hide other apps' actual menu bar icons
 
 **Browsing and organization**
@@ -208,7 +208,7 @@ The probes cover:
 
 - Original wave timing and visibility rules, background fade endpoints, interrupted transitions, and refresh-rate hints for 60/120/144/240 Hz displays. These in-memory checks do not measure displayed frame rate; that requires validation on the target display.
 - Build freshness and full-launcher opening/closing transitions.
-- Organizer corner transparency, two-pixel menu bar spacing, and app activation.
+- Organizer corner transparency, two-pixel menu bar spacing, Dock clearance, and app activation.
 - Three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
 - Confirmation sheets appearing above full-screen/windowed launchers, with cancellation leaving the launcher visible.
 

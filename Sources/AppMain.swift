@@ -68,6 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        if trayShown { layoutTray() }
+    }
+
     /// 只在屏幕外预热布局和保留视图缓存，不让隐藏的全屏毛玻璃参与桌面合成。
     private func prewarmPanel() {
         guard !AppModel.shared.isOpen else { return }
@@ -225,8 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if #available(macOS 26, *) { return true }
                 return false
             }(),
-            onClose: { [weak self] in self?.dismissTray() },
-            onContentChange: { [weak self] in self?.layoutTray(animated: true) }
+            onClose: { [weak self] in self?.dismissTray() }
         ))
         host.autoresizingMask = [.width, .height]
         host.sizingOptions = []
@@ -259,41 +262,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return panel
     }
 
-    /// 按菜单栏底边而非图标底边定位，只留 2 个屏幕像素的间隙。
-    private func layoutTray(animated: Bool = false) {
-        guard let trayPanel, let button = statusItem?.button, let window = button.window else { return }
-        let width = TrayView.contentWidth
-        let height = TrayView.contentHeight(
-            pinned: AppModel.shared.pinnedApps.count,
-            running: AppModel.shared.runningApps.count
-        )
+    /// 菜单栏下方留 2 个屏幕像素，Dock 上方保留 6 点并额外上收 200 像素。
+    private func layoutTray() {
+        guard let trayPanel, let button = statusItem?.button, let window = button.window,
+              let screen = window.screen ?? NSScreen.main else { return }
+        let frame = screen.visibleFrame
+        let width = min(TrayView.contentWidth, max(1, frame.width - 12))
         let buttonRect = window.convertToScreen(button.convert(button.bounds, to: nil))
         lastStatusItemRect = buttonRect
-        var x = buttonRect.midX - width / 2
-        let screen = window.screen ?? NSScreen.main
-        if let frame = screen?.visibleFrame {
-            x = min(max(x, frame.minX + 6), frame.maxX - width - 6)
-        }
-        let menuBottom: CGFloat
-        if let screen {
-            let menuHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-            menuBottom = min(screen.visibleFrame.maxY, screen.frame.maxY - menuHeight)
-        } else {
-            menuBottom = buttonRect.minY
-        }
-        let gap = 2 / (screen?.backingScaleFactor ?? 1)
+        let x = min(max(buttonRect.midX - width / 2, frame.minX + 6), frame.maxX - width - 6)
+        let menuHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+        let menuBottom = min(frame.maxY, screen.frame.maxY - menuHeight)
+        let gap = 2 / screen.backingScaleFactor
         let topY = menuBottom - gap
-        let target = NSRect(x: x, y: topY - height, width: width, height: height)
+        let bottomY = frame.minY + 6 + 200 / screen.backingScaleFactor
+        let target = NSRect(x: x, y: bottomY, width: width,
+                            height: max(1, topY - bottomY))
         guard trayPanel.frame != target else { return }
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.16
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                trayPanel.animator().setFrame(target, display: false)
-            }
-        } else {
-            trayPanel.setFrame(target, display: false)
-        }
+        trayPanel.setFrame(target, display: false)
         trayPanel.invalidateShadow()
     }
 

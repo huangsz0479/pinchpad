@@ -44,7 +44,8 @@ let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) a
 let trayVisible = windows.contains {
     let bounds = $0[kCGWindowBounds as String] as? [String: NSNumber] ?? [:]
     return ($0[kCGWindowOwnerPID as String] as? Int32) == pid
-        && bounds["Width"]?.intValue == 332 && (bounds["Height"]?.intValue ?? 0) > 100
+        && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.mainMenu.rawValue - 1
+        && (bounds["Height"]?.intValue ?? 0) > 100
 }
 if !trayVisible {
     guard let bar = attribute(app, "AXExtrasMenuBar"),
@@ -62,7 +63,10 @@ for _ in 0..<30 {
     usleep(100_000)
     let windows = (attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [])
         + (attribute(app, kAXChildrenAttribute) as? [AXUIElement] ?? [])
-    if let tray = windows.first(where: { abs(size(of: $0).width - 332) < 1 }),
+    if let tray = windows.first(where: {
+        let windowSize = size(of: $0)
+        return windowSize.width <= 460 && windowSize.height > 100
+    }),
        let icon = findIcon(in: tray) {
         target = icon
         break

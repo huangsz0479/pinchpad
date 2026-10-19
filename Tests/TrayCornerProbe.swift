@@ -10,7 +10,6 @@ guard let tray = windows.first(where: {
     let bounds = $0[kCGWindowBounds as String] as? [String: NSNumber] ?? [:]
     return ($0[kCGWindowOwnerPID as String] as? Int32) == pid
         && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.mainMenu.rawValue - 1
-        && bounds["Width"]?.intValue == 332
         && (bounds["Height"]?.intValue ?? 0) > 100
 }), let number = tray[kCGWindowNumber as String] as? Int else {
     fatalError("Open the Pinchpad tray before running the probe")
