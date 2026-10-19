@@ -19,6 +19,9 @@ final class AppModel: ObservableObject {
         didSet {
             guard ready, settings != oldValue else { return }
             persist()
+            if settings.sources != oldValue.sources {
+                updateAppSources()
+            }
             if settings.f4Enabled != oldValue.f4Enabled
                 || settings.hotKeyCode != oldValue.hotKeyCode
                 || settings.hotKeyModifiers != oldValue.hotKeyModifiers {
@@ -139,6 +142,8 @@ final class AppModel: ObservableObject {
     private let persistQueue = DispatchQueue(label: "app.local.pinchpad.persist", qos: .utility)
     private var appsByID: [String: AppItem] = [:]
     private var foldersByID: [UUID: FolderItem] = [:]
+    private var rescanPending = false
+    private lazy var appLibraryMonitor = AppLibraryMonitor { [weak self] in self?.rescan() }
 
     private init() {
         let appSupport = FileManager.default.homeDirectoryForCurrentUser
@@ -176,7 +181,7 @@ final class AppModel: ObservableObject {
         rebuildIndexes()
         ready = true
         wireMonitors()
-        if apps.isEmpty { rescan() }
+        updateAppSources()
         prefetchIcons()
     }
 
@@ -399,12 +404,32 @@ final class AppModel: ObservableObject {
     }
 
     func rescan() {
+        guard !isScanning else {
+            rescanPending = true
+            return
+        }
         isScanning = true
         let paths = settings.sources.filter(\.enabled).map(\.path)
-        Task.detached {
+        Task.detached(priority: .utility) { [weak self] in
             let found = AppScanner.scan(paths: paths)
-            await MainActor.run { AppModel.shared.merge(found) }
+            await self?.finishScan(found, paths: paths)
         }
+    }
+
+    private func updateAppSources() {
+        appLibraryMonitor.apply(paths: settings.sources.filter(\.enabled).map(\.path))
+        rescan()
+    }
+
+    private func finishScan(_ found: [AppScanner.Found], paths: [String]) {
+        let currentPaths = settings.sources.filter(\.enabled).map(\.path)
+        guard !rescanPending, paths == currentPaths else {
+            rescanPending = false
+            isScanning = false
+            rescan()
+            return
+        }
+        merge(found)
     }
 
     func launch(_ app: AppItem) {
@@ -824,12 +849,10 @@ final class AppModel: ObservableObject {
         panel.prompt = "添加"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         settings.sources.append(AppSource(id: UUID(), path: url.path, enabled: true, custom: true))
-        rescan()
     }
 
     func removeSource(_ id: UUID) {
         settings.sources.removeAll { $0.id == id && $0.custom }
-        rescan()
     }
 
     func setGrid(columns: Int, rows: Int) {
@@ -882,6 +905,12 @@ final class AppModel: ObservableObject {
         }
         if updatedFolders != folders { folders = updatedFolders }
         let folderIDs = Set(folders.map(\.id))
+        if let openFolderID, !folderIDs.contains(openFolderID) {
+            self.openFolderID = nil
+        }
+        let validSelection = Set(kept.map { Slot.app($0).id } + folderIDs.map { Slot.folder($0).id })
+        let nextSelection = selection.intersection(validSelection)
+        if nextSelection != selection { selection = nextSelection }
         for index in pages.indices {
             pages[index].slots.removeAll { slot in
                 switch slot {

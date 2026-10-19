@@ -38,6 +38,7 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 - Context menu: open, reveal in Finder, pin to the organizer, rename, hide, pin to Dock, move to Trash
 - Live search filter; hold `Option` and click to review an uninstall confirmation, including related support files
 - “Organize App Layout” and “Import System App Order”
+- Enabled app directories and their subfolders sync automatically: new apps are appended, uninstalled apps are removed, and startup reconciles changes made while Pinchpad was closed. Existing names, hidden states, folders, and app order are preserved.
 
 **Confirmation dialogs**
 - Uninstall, rename, and Dock-pinning dialogs use native sheets attached to the launcher, so they stay above it in both full-screen and windowed modes
@@ -133,6 +134,7 @@ Pinchpad/
 ├── Sources/
 │   ├── AppMain.swift          # Entry point, panel window, menu bar, hot corner/pinch wiring, fades, backdrop glow
 │   ├── AppModel.swift         # Global state, persistence, icon cache, drag & drop, paging, uninstall, import
+│   ├── AppLibraryMonitor.swift # Event-driven directory monitoring and installation-change debounce
 │   ├── PanelAlertPresenter.swift # Native confirmation sheets attached to their launcher
 │   ├── IconEntrance.swift      # Original icon-wave timing and visibility rules
 │   ├── PanelAnimation.swift     # Compositor transitions and display-aware frame-rate hints
@@ -149,6 +151,7 @@ Pinchpad/
 │   ├── IdleResponsivenessProbe.swift # Hidden surfaces and input-thread isolation
 │   ├── AlertPresentationProbe.swift # Alert stacking and cancellation in full-screen/windowed modes
 │   ├── PinchGestureProbe.swift    # Gesture recognition and three-/four-finger panel routing
+│   ├── AppLibrarySyncProbe.py     # App installation/removal, startup reconciliation, and source changes
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
 │   └── TrayPlacementProbe.swift   # Two-pixel menu bar gap and window-level checks
@@ -167,6 +170,7 @@ Pinchpad/
 - Native transitions request a preferred rate of 120 fps when the display supports it, bounded by the display capability. A 60 Hz display can only show up to 60 fps.
 - Gesture filtering runs on a dedicated run loop so UI work does not block global gesture delivery.
 - Menu bar app discovery runs when the organizer opens and when apps launch or quit, rather than on a continuous polling timer.
+- App-library synchronization watches enabled directories with macOS file events, combines bursts of installation changes, and scans off the main thread. Idle libraries do not poll; changing scan directories takes effect immediately.
 - Timing and resource usage depend on the system, hardware, and app library. Use the probes below to check the current build.
 
 ## Testing
@@ -188,6 +192,9 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
 
 # Arrow paging and event delivery without system input or loading the user's library:
 python3 Tests/PageNavigationProbe.py
+
+# App installation/removal and source changes using temporary app bundles; no UI or user library:
+python3 Tests/AppLibrarySyncProbe.py
 
 # Animation contracts and refresh-rate hints without windows or a running app:
 swiftc Sources/IconEntrance.swift Sources/PanelAnimation.swift Tests/PanelAnimationProbe.swift \
@@ -211,6 +218,7 @@ The probes cover:
 - Build freshness and full-launcher opening/closing transitions.
 - Organizer corner transparency, two-pixel menu bar spacing, Dock clearance, and app activation.
 - Five sensitivity levels, live updates and preference migration; three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
+- Automatic installation/removal, offline startup changes, nested and recreated sources, path aliases, app moves, preserved metadata/layout, stale-scan rejection, and idle behavior. The library probe only creates/removes temporary fixtures.
 - Confirmation sheets appearing above full-screen/windowed launchers, with cancellation leaving the launcher visible.
 
 The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). The gesture probe does not install device hooks or require a running app. The alert probe opens test dialogs and only cancels them; it does not delete anything. Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions for tests that interact with the running app.

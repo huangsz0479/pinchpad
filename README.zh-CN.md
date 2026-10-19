@@ -38,6 +38,7 @@ macOS 菜单栏常驻的**应用启动器与收纳面板**。从菜单栏或三�
 - 右键菜单：打开、在 Finder 中显示、收进菜单栏、重命名、隐藏、固定到 Dock、移到废纸篓
 - 搜索框实时过滤；按住 `Option` 点击可打开卸载确认框，查看应用及相关支持文件清单
 - 「整理应用布局」与「导入系统应用顺序」
+- 启用的扫描目录及其子目录会自动同步：新安装的应用追加到现有布局，卸载后自动移除；启动时也会同步关闭期间的变化，保留已有的名称、隐藏状态、文件夹和应用顺序。
 
 **确认弹窗**
 - 卸载、重命名和固定到 Dock 的弹窗使用附属于启动面板的原生 sheet，全屏和窗口模式下都显示在面板前方
@@ -133,6 +134,7 @@ Pinchpad/
 ├── Sources/
 │   ├── AppMain.swift          # 入口、面板窗口、菜单栏、热角/捏合接线、淡入淡出、背景光晕
 │   ├── AppModel.swift         # 全局状态、数据持久化、图标缓存、拖拽、分页、卸载、导入
+│   ├── AppLibraryMonitor.swift # 应用目录变动监听与安装事件防抖
 │   ├── PanelAlertPresenter.swift # 附属于启动面板的原生确认弹窗
 │   ├── IconEntrance.swift      # 原有图标波纹时序与可见性规则
 │   ├── PanelAnimation.swift     # 合成器过渡与屏幕刷新率适配
@@ -149,6 +151,7 @@ Pinchpad/
 │   ├── IdleResponsivenessProbe.swift # 隐藏窗口与输入线程隔离检查
 │   ├── AlertPresentationProbe.swift # 全屏/窗口模式的弹窗层级与取消检查
 │   ├── PinchGestureProbe.swift    # 手势识别与三指/四指面板路由检查
+│   ├── AppLibrarySyncProbe.py     # 安装/卸载自动同步、启动校准与扫描目录变化检查
 │   ├── TrayActivationProbe.swift  # 图标点击、轻微拖动与辅助功能按压
 │   ├── TrayCornerProbe.swift      # 圆角外侧像素透明度检查
 │   └── TrayPlacementProbe.swift   # 菜单栏下方 2px 间距与窗口层级检查
@@ -167,6 +170,7 @@ Pinchpad/
 - 在支持的屏幕上请求优先 120 帧，刷新率偏好不会超过屏幕能力；60 Hz 屏幕最多只能显示 60 帧。
 - 全局手势拦截使用独立运行循环，界面工作不会阻塞全局手势处理。
 - 菜单栏应用在打开收纳面板及应用启动/退出时刷新，不做持续的定时扫描。
+- 应用库通过 macOS 文件事件监听启用的目录，合并安装过程中的连续变化后在后台扫描；空闲时不轮询，扫描目录的启用、停用和增删会立即生效。
 - 实际耗时与资源占用取决于系统、设备和应用数量，可使用以下探针检查当前构建。
 
 ## 测试
@@ -188,6 +192,9 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
 
 # 不发送系统输入、不读取个人应用库，检查方向键单次翻页与事件传递：
 python3 Tests/PageNavigationProbe.py
+
+# 只创建临时应用包，不操作界面或个人应用库，检查安装/卸载与扫描目录同步：
+python3 Tests/AppLibrarySyncProbe.py
 
 # 不创建窗口、不依赖运行中的应用，检查动画与刷新率偏好：
 swiftc Sources/IconEntrance.swift Sources/PanelAnimation.swift Tests/PanelAnimationProbe.swift \
@@ -211,6 +218,7 @@ swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
 - 构建一致性与完整启动面板的打开/关闭过渡。
 - 收纳面板的圆角透明度、菜单栏下方 2px 间距、避开 Dock，以及图标是否能打开应用。
 - 五档灵敏度、即时调整和旧设置迁移；三指/四指面板路由、系统「显示桌面」事件放行，以及系统左右/上下滑动的保留。
+- 安装/卸载自动同步、关闭期间的变化、嵌套与重建的目录、路径别名、应用移动、元数据与布局保留、过期扫描结果丢弃及空闲行为；应用库探针只增删临时测试文件。
 - 全屏/窗口模式下确认弹窗位于启动面板前方，且取消后面板仍然可见。
 
 启动探针还支持 `drift`（轻微拖动）和 `ax`（辅助功能按压）模式。手势探针不安装设备监听，也不需要运行中的应用。弹窗探针只打开测试对话框并取消，不会删除任何内容。与实际应用交互的测试需要为终端或宿主程序授予相应的辅助功能、截屏及自动化权限。
