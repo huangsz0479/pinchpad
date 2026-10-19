@@ -103,6 +103,27 @@ private struct GesturesTab: View {
             Section("触控板手势") {
                 Toggle("三指捏合打开菜单栏收纳", isOn: $model.settings.pinchThree)
                 Toggle("四指捏合打开全屏面板", isOn: $model.settings.pinchFour)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("捏合灵敏度")
+                        Spacer()
+                        Text(model.settings.pinchSensitivity.title)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 8) {
+                        Text("低")
+                            .font(.caption)
+                        Slider(value: pinchSensitivity, in: 1...5, step: 1)
+                            .accessibilityLabel("捏合灵敏度")
+                            .accessibilityValue(model.settings.pinchSensitivity.title)
+                        Text("高")
+                            .font(.caption)
+                    }
+                    Text("调低需要更明显的收拢，调高更容易触发；各档都过滤短促抖动，正常捏合后可直接抬手。三指和四指共用，调整后立即生效。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(!model.settings.pinchThree && !model.settings.pinchFour)
                 Text("支持内置触控板与外接 Magic Trackpad。Pinchpad 只接管向内捏合；四指张开仍保留系统「显示桌面」功能。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -117,6 +138,15 @@ private struct GesturesTab: View {
         }
         .formStyle(.grouped)
         .padding(4)
+    }
+
+    private var pinchSensitivity: Binding<Double> {
+        Binding {
+            Double(model.settings.pinchSensitivity.rawValue)
+        } set: { value in
+            guard let sensitivity = PinchSensitivity(rawValue: Int(value.rounded())) else { return }
+            model.settings.pinchSensitivity = sensitivity
+        }
     }
 }
 

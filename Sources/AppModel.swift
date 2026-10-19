@@ -28,7 +28,9 @@ final class AppModel: ObservableObject {
                 CornerMonitor.shared.apply(settings.hotCorner)
             }
             if settings.pinchThree != oldValue.pinchThree || settings.pinchFour != oldValue.pinchFour {
-                PinchMonitor.shared.apply(counts: settings.pinchCounts)
+                PinchMonitor.shared.apply(counts: settings.pinchCounts, sensitivity: settings.pinchSensitivity)
+            } else if settings.pinchSensitivity != oldValue.pinchSensitivity {
+                PinchMonitor.shared.setSensitivity(settings.pinchSensitivity)
             }
             if settings.showMenuBar != oldValue.showMenuBar {
                 AppDelegate.current?.refreshTray()
@@ -1486,7 +1488,7 @@ final class AppModel: ObservableObject {
     private func applyChrome() {
         notice = registerHotKey()
         CornerMonitor.shared.apply(settings.hotCorner)
-        PinchMonitor.shared.apply(counts: settings.pinchCounts)
+        PinchMonitor.shared.apply(counts: settings.pinchCounts, sensitivity: settings.pinchSensitivity)
         keepOutOfDock()
     }
 

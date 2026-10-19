@@ -581,10 +581,10 @@ final class PinchMonitor {
         tapRunLoop?.stop()
     }
 
-    func apply(counts: Set<Int>) {
+    func apply(counts: Set<Int>, sensitivity: PinchSensitivity = .standard) {
         stateLock.lock()
         openCounts = counts
-        classifier.reset()
+        classifier = PinchClassifier(sensitivity: sensitivity)
         swallowingDock = nil
         stateLock.unlock()
         if !AXIsProcessTrusted() {
@@ -597,6 +597,15 @@ final class PinchMonitor {
         }
         startDevice()
         startTap()
+    }
+
+    /// 更新识别门槛即可，无需重启设备监听或重新请求辅助功能授权。
+    func setSensitivity(_ sensitivity: PinchSensitivity) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard classifier.sensitivity != sensitivity else { return }
+        classifier = PinchClassifier(sensitivity: sensitivity)
+        swallowingDock = nil
     }
 
     func shouldSwallow(type: CGEventType, event: CGEvent) -> Bool {
@@ -643,10 +652,10 @@ final class PinchMonitor {
         handle(samples: samples)
     }
 
-    func handle(samples: [TouchSample]) {
+    func handle(samples: [TouchSample], at timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         stateLock.lock()
         let counts = openCounts
-        let signal = classifier.feed(samples) { counts.contains($0) }
+        let signal = classifier.feed(samples, at: timestamp) { counts.contains($0) }
         let fingers = classifier.peak
         // 只有被判定为捏合（或被整段拦下的 Dock 手势）的触点序列才算手势尾巴，
         // 普通点按本身也会产生按下触点，不能误伤。

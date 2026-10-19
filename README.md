@@ -18,6 +18,7 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 - Four-finger spread is passed through to macOS for Show Desktop when enabled in System Settings; Pinchpad only intercepts the inward app-launcher pinch
 - Global keyboard shortcut (default `F4`, configurable) and screen hot corners open the full launcher
 - Three- and four-finger gestures can be enabled independently in Settings
+- Five pinch sensitivity levels in Settings → Gestures & Keys offer gradual differences in required movement. All levels filter brief jitter while confirming during the pinch, so no extra hold is needed. The setting applies to both finger counts, takes effect immediately, and is saved across restarts.
 
 **Menu bar organizer**
 - The menu bar section shows third-party apps that actually own menu bar icons, in their on-screen order
@@ -209,7 +210,7 @@ The probes cover:
 - Original wave timing and visibility rules, background fade endpoints, interrupted transitions, and refresh-rate hints for 60/120/144/240 Hz displays. These in-memory checks do not measure displayed frame rate; that requires validation on the target display.
 - Build freshness and full-launcher opening/closing transitions.
 - Organizer corner transparency, two-pixel menu bar spacing, Dock clearance, and app activation.
-- Three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
+- Five sensitivity levels, live updates and preference migration; three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
 - Confirmation sheets appearing above full-screen/windowed launchers, with cancellation leaving the launcher visible.
 
 The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). The gesture probe does not install device hooks or require a running app. The alert probe opens test dialogs and only cancels them; it does not delete anything. Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions for tests that interact with the running app.
