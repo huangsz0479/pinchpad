@@ -2,7 +2,8 @@ import AppKit
 import ApplicationServices
 
 // Run against the signed app. This clicks a real tray icon and checks that its
-// application becomes frontmost, including reopening an already-running app.
+// application becomes frontmost and that the tray panel is dismissed,
+// including reopening an already-running app.
 // Usage: swift Tests/TrayActivationProbe.swift <PID> <label> <bundleID> [mouse|drift|ax]
 guard CommandLine.arguments.count >= 4, let pid = Int32(CommandLine.arguments[1]) else {
     fputs("Usage: TrayActivationProbe <PID> <label> <bundleID> [mouse|drift|ax]\n", stderr)
@@ -11,6 +12,16 @@ guard CommandLine.arguments.count >= 4, let pid = Int32(CommandLine.arguments[1]
 let label = CommandLine.arguments[2]
 let bundleID = CommandLine.arguments[3]
 let mode = CommandLine.arguments.count > 4 ? CommandLine.arguments[4] : "mouse"
+
+func trayIsVisible() -> Bool {
+    let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    return windows.contains {
+        let bounds = $0[kCGWindowBounds as String] as? [String: NSNumber] ?? [:]
+        return ($0[kCGWindowOwnerPID as String] as? Int32) == pid
+            && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.mainMenu.rawValue - 1
+            && (bounds["Height"]?.intValue ?? 0) > 100
+    }
+}
 
 func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
     var value: CFTypeRef?
@@ -40,13 +51,7 @@ func findIcon(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
 }
 
 let app = AXUIElementCreateApplication(pid)
-let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-let trayVisible = windows.contains {
-    let bounds = $0[kCGWindowBounds as String] as? [String: NSNumber] ?? [:]
-    return ($0[kCGWindowOwnerPID as String] as? Int32) == pid
-        && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.mainMenu.rawValue - 1
-        && (bounds["Height"]?.intValue ?? 0) > 100
-}
+let trayVisible = trayIsVisible()
 if !trayVisible {
     guard let bar = attribute(app, "AXExtrasMenuBar"),
           let item = (attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement])?.first,
@@ -113,7 +118,8 @@ while Date() < deadline {
     if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID {
         // Let the tray finish closing and ensure it does not steal focus back.
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
-        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID {
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
+            && !trayIsVisible() {
             print("PASS: \(mode) click on \(label) opened \(bundleID)")
             exit(0)
         }
@@ -121,5 +127,5 @@ while Date() < deadline {
     // NSWorkspace updates its frontmost-app cache via run-loop notifications.
     RunLoop.current.run(until: Date().addingTimeInterval(0.1))
 }
-fputs("FAIL: \(label) did not open; frontmost is \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown")\n", stderr)
+fputs("FAIL: \(label) did not open or tray stayed visible; frontmost is \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"), trayIsVisible=\(trayIsVisible())\n", stderr)
 exit(1)

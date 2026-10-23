@@ -17,6 +17,7 @@ A native **app launcher and menu bar organizer** for macOS. Click the menu bar i
 - Either enabled outward-spread gesture dismisses the visible Pinchpad panel, regardless of how it was opened
 - Four-finger spread is passed through to macOS for Show Desktop when enabled in System Settings; Pinchpad only intercepts the inward app-launcher pinch
 - Global keyboard shortcut (default `F4`, configurable) and screen hot corners open the full launcher
+- Optional second shortcut opens a new terminal window in a fixed working directory; the directory and terminal app are configurable
 - Three- and four-finger gestures can be enabled independently in Settings
 - Five pinch sensitivity levels in Settings → Gestures & Keys offer gradual differences in required movement. All levels filter brief jitter while confirming during the pinch, so no extra hold is needed. The setting applies to both finger counts, takes effect immediately, and is saved across restarts.
 
@@ -101,6 +102,7 @@ swift generate-icon.swift <output-iconset-directory> <menubar-icon-output-direct
 | Create a folder | Drag one app onto another, or multi-select and click “New Folder” |
 | Request an uninstall | `Option` + click (can be disabled in Settings), or right-click → Move to Trash; review and confirm the dialog |
 | Adjust pinch sensitivity | Settings → Gestures & Keys → Pinch sensitivity; shared by three- and four-finger gestures |
+| Open a terminal | Enable and record a shortcut in Settings → Gestures & Keys → Terminal; each press opens a new window in the configured directory |
 | Manage app folders | Settings → Apps & Sources; enable a folder or add a custom location |
 | Settings | Right-click the menu bar icon → Settings |
 
@@ -129,6 +131,16 @@ Open **Settings → Apps & Sources (应用与来源)** to choose which folders c
 Three- and four-finger inward pinches open different Pinchpad panels; an outward spread is not limited to closing the panel opened by the same finger count. The macOS four-finger Show Desktop gesture remains available even when Pinchpad is running. Enable it in **System Settings → Trackpad → More Gestures → Show Desktop**.
 
 Requesting an uninstall does not immediately remove anything. Review the application and any listed support files in the confirmation sheet, then explicitly confirm to move them to Trash. Choose Cancel to leave them untouched. Pinchpad refuses to remove itself or applications under `/System`.
+
+### Terminal shortcut
+
+Open **Settings → Gestures & Keys (手势与按键) → Terminal (终端)** to configure a dedicated shortcut for opening a terminal window.
+
+- Enable the toggle and record any key combination, the same way the launcher shortcut is set.
+- **Working directory**: each new terminal window starts in this folder; leave it empty to use your home directory, or pick a folder with **Choose… (选择…)**.
+- **Terminal app**: defaults to the built-in Terminal.app; point it at iTerm or another terminal app that opens folders as new sessions.
+
+Pressing the shortcut while the launcher or organizer is open dismisses it first, then the terminal activates. If the configured folder no longer exists, Pinchpad shows a notice instead of opening anywhere else.
 
 ## Local data
 
@@ -180,7 +192,8 @@ Pinchpad/
 │   ├── AppLibrarySyncProbe.py     # App installation/removal, startup reconciliation, and source changes
 │   ├── TrayActivationProbe.swift  # Icon clicks, pointer drift, and accessible press actions
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
-│   └── TrayPlacementProbe.swift   # Two-pixel menu bar gap and window-level checks
+│   ├── TrayPlacementProbe.swift   # Two-pixel menu bar gap and window-level checks
+│   └── TerminalDirectoryProbe.swift # Terminal launches land a new shell in the configured directory
 ├── Resources/                 # Menu bar icons
 ├── AppIcon.iconset/           # App icon sources
 ├── AppIcon.icns
@@ -248,6 +261,10 @@ swiftc -swift-version 5 Sources/Model.swift Sources/PinchClassifier.swift \
 swiftc -swift-version 5 Sources/PanelAlertPresenter.swift \
   Tests/AlertPresentationProbe.swift -o /tmp/AlertPresentationProbe \
   && /tmp/AlertPresentationProbe
+
+# Terminal launch path: opens a real terminal window in a temp directory and
+# checks that a new shell appears with that directory as its working directory:
+swift Tests/TerminalDirectoryProbe.swift "$(mktemp -d)"
 ```
 
 The probes cover:
@@ -259,6 +276,7 @@ The probes cover:
 - Five sensitivity levels, live updates and preference migration; three-/four-finger panel routing, Show Desktop event pass-through, and preservation of system horizontal/vertical swipes.
 - Automatic installation/removal, offline startup changes, nested and recreated sources, path aliases, app moves, preserved metadata/layout, stale-scan rejection, and idle behavior. The library probe only creates/removes temporary fixtures.
 - Confirmation sheets appearing above full-screen/windowed launchers, with cancellation leaving the launcher visible.
+- Terminal launches: a folder handed to the terminal app through Launch Services becomes the new shell's working directory. The probe opens a real terminal window in a temporary directory.
 
 The activation probe also supports `drift` (a click with slight pointer movement) and `ax` (an accessible press action). The gesture probe does not install device hooks or require a running app. The alert probe opens test dialogs and only cancels them; it does not delete anything. Grant the terminal or test host the relevant Accessibility, screen capture, and automation permissions for tests that interact with the running app.
 

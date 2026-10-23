@@ -117,6 +117,14 @@ struct Preferences: Codable, Equatable {
     /// F4，不带修饰键。
     var hotKeyCode: UInt32 = 118
     var hotKeyModifiers: UInt32 = 0
+    /// 「打开终端」全局快捷键，默认关闭；默认 ⌃⌥T（17 = T，0x1800 = control | option）。
+    var terminalHotKeyEnabled: Bool = false
+    var terminalHotKeyCode: UInt32 = 17
+    var terminalHotKeyModifiers: UInt32 = 0x1800
+    /// 终端新窗口的工作目录；留空表示用户主目录。
+    var terminalDirectory: String = ""
+    /// 终端应用路径；留空表示系统自带 Terminal.app。
+    var terminalAppPath: String = ""
     var showOn: ShowOn = .cursor
     var returnToFirstPage: Bool = false
     var sortBy: SortKey = .custom
@@ -132,6 +140,7 @@ struct Preferences: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case columns, rows, browsing, showMenuBar, showDockIcon, hideDockWhileOpen
         case hotCorner, pinchToOpen, pinchFingers, pinchThree, pinchFour, f4Enabled, hotKeyCode, hotKeyModifiers
+        case terminalHotKeyEnabled, terminalHotKeyCode, terminalHotKeyModifiers, terminalDirectory, terminalAppPath
         case pinchSensitivity
         case showOn, returnToFirstPage, sortBy, sortAscending, hideNames
         case showHiddenInSearch, optionClickUninstall, backdrop, sources, launchAtLogin, reorganize
@@ -163,6 +172,11 @@ struct Preferences: Codable, Equatable {
         f4Enabled = try container.decodeIfPresent(Bool.self, forKey: .f4Enabled) ?? f4Enabled
         hotKeyCode = try container.decodeIfPresent(UInt32.self, forKey: .hotKeyCode) ?? hotKeyCode
         hotKeyModifiers = try container.decodeIfPresent(UInt32.self, forKey: .hotKeyModifiers) ?? hotKeyModifiers
+        terminalHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .terminalHotKeyEnabled) ?? terminalHotKeyEnabled
+        terminalHotKeyCode = try container.decodeIfPresent(UInt32.self, forKey: .terminalHotKeyCode) ?? terminalHotKeyCode
+        terminalHotKeyModifiers = try container.decodeIfPresent(UInt32.self, forKey: .terminalHotKeyModifiers) ?? terminalHotKeyModifiers
+        terminalDirectory = try container.decodeIfPresent(String.self, forKey: .terminalDirectory) ?? terminalDirectory
+        terminalAppPath = try container.decodeIfPresent(String.self, forKey: .terminalAppPath) ?? terminalAppPath
         showOn = try container.decodeIfPresent(ShowOn.self, forKey: .showOn) ?? showOn
         returnToFirstPage = try container.decodeIfPresent(Bool.self, forKey: .returnToFirstPage) ?? returnToFirstPage
         sortBy = try container.decodeIfPresent(SortKey.self, forKey: .sortBy) ?? sortBy
@@ -191,6 +205,11 @@ struct Preferences: Codable, Equatable {
         try container.encode(f4Enabled, forKey: .f4Enabled)
         try container.encode(hotKeyCode, forKey: .hotKeyCode)
         try container.encode(hotKeyModifiers, forKey: .hotKeyModifiers)
+        try container.encode(terminalHotKeyEnabled, forKey: .terminalHotKeyEnabled)
+        try container.encode(terminalHotKeyCode, forKey: .terminalHotKeyCode)
+        try container.encode(terminalHotKeyModifiers, forKey: .terminalHotKeyModifiers)
+        try container.encode(terminalDirectory, forKey: .terminalDirectory)
+        try container.encode(terminalAppPath, forKey: .terminalAppPath)
         try container.encode(showOn, forKey: .showOn)
         try container.encode(returnToFirstPage, forKey: .returnToFirstPage)
         try container.encode(sortBy, forKey: .sortBy)

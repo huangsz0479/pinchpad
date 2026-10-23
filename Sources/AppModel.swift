@@ -27,6 +27,11 @@ final class AppModel: ObservableObject {
                 || settings.hotKeyModifiers != oldValue.hotKeyModifiers {
                 notice = registerHotKey()
             }
+            if settings.terminalHotKeyEnabled != oldValue.terminalHotKeyEnabled
+                || settings.terminalHotKeyCode != oldValue.terminalHotKeyCode
+                || settings.terminalHotKeyModifiers != oldValue.terminalHotKeyModifiers {
+                notice = registerTerminalHotKey()
+            }
             if settings.hotCorner != oldValue.hotCorner {
                 CornerMonitor.shared.apply(settings.hotCorner)
             }
@@ -370,12 +375,101 @@ final class AppModel: ObservableObject {
         HotKeyCenter.title(keyCode: settings.hotKeyCode, modifiers: settings.hotKeyModifiers)
     }
 
+    var terminalHotKeyLabel: String {
+        HotKeyCenter.title(keyCode: settings.terminalHotKeyCode, modifiers: settings.terminalHotKeyModifiers)
+    }
+
     func registerHotKey() -> String? {
         HotKeyCenter.shared.apply(
+            id: HotKeyCenter.launcherID,
             enabled: settings.f4Enabled,
             keyCode: settings.hotKeyCode,
             modifiers: settings.hotKeyModifiers
+        ) { AppModel.shared.toggle() }
+    }
+
+    func registerTerminalHotKey() -> String? {
+        HotKeyCenter.shared.apply(
+            id: HotKeyCenter.terminalID,
+            enabled: settings.terminalHotKeyEnabled,
+            keyCode: settings.terminalHotKeyCode,
+            modifiers: settings.terminalHotKeyModifiers
+        ) { AppModel.shared.openTerminal() }
+    }
+
+    // MARK: - 终端快捷键
+
+    /// 终端启动目录：展开 ~，留空时使用用户主目录；失效目录在打开时提示。
+    var resolvedTerminalDirectory: String {
+        let expanded = (settings.terminalDirectory as NSString).expandingTildeInPath
+        if expanded.isEmpty { return FileManager.default.homeDirectoryForCurrentUser.path }
+        return expanded
+    }
+
+    /// 终端应用：配置了但文件已不在时退回系统自带 Terminal.app。
+    var resolvedTerminalAppPath: String {
+        let path = settings.terminalAppPath
+        if !path.isEmpty, FileManager.default.fileExists(atPath: path) { return path }
+        return "/System/Applications/Utilities/Terminal.app"
+    }
+
+    var terminalDirectoryLabel: String {
+        resolvedTerminalDirectory.replacingOccurrences(
+            of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"
         )
+    }
+
+    var terminalAppLabel: String {
+        URL(fileURLWithPath: resolvedTerminalAppPath).deletingPathExtension().lastPathComponent
+    }
+
+    /// 全局快捷键入口：在选定终端里打开一个新窗口，工作目录固定为配置目录。
+    /// 走 LaunchServices 的 open-documents（等价 `open -a 终端 目录`），
+    /// Terminal / iTerm 这类应用收到文件夹会把它当成新会话的 cwd。
+    func openTerminal() {
+        let directory = resolvedTerminalDirectory
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            notice = "终端启动目录不存在：\(terminalDirectoryLabel)。到设置里重新选一个。"
+            return
+        }
+        let appURL = URL(fileURLWithPath: resolvedTerminalAppPath)
+        close()
+        AppDelegate.current?.dismissTray()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.open(
+            [URL(fileURLWithPath: directory, isDirectory: true)],
+            withApplicationAt: appURL, configuration: configuration
+        ) { _, error in
+            guard let error else { return }
+            Task { @MainActor in
+                AppModel.shared.notice = "没能打开终端：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func chooseTerminalDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.prompt = "选择"
+        panel.directoryURL = URL(fileURLWithPath: resolvedTerminalDirectory)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.terminalDirectory = url.path
+    }
+
+    func chooseTerminalApp() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = "选择"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.terminalAppPath = url.path
     }
 
     func targetScreen() -> NSScreen? {
@@ -1520,7 +1614,6 @@ final class AppModel: ObservableObject {
     }
 
     private func wireMonitors() {
-        HotKeyCenter.shared.onPress = { AppModel.shared.toggle() }
         CornerMonitor.shared.onFire = { AppModel.shared.toggle() }
         PinchMonitor.shared.bindPanels(
             openTray: { AppDelegate.current?.openTrayFromPinch() },
@@ -1539,7 +1632,8 @@ final class AppModel: ObservableObject {
     }
 
     private func applyChrome() {
-        notice = registerHotKey()
+        let failures = [registerHotKey(), registerTerminalHotKey()].compactMap { $0 }
+        notice = failures.isEmpty ? nil : failures.joined(separator: " ")
         CornerMonitor.shared.apply(settings.hotCorner)
         PinchMonitor.shared.apply(counts: settings.pinchCounts, sensitivity: settings.pinchSensitivity)
         keepOutOfDock()

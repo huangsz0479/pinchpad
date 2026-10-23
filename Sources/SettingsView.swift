@@ -98,7 +98,38 @@ private struct GesturesTab: View {
         Form {
             Section("快捷键") {
                 Toggle("启用快捷键打开", isOn: $model.settings.f4Enabled)
-                HotKeyEditor(model: model)
+                HotKeyEditor(title: "全局快捷键", label: model.hotKeyLabel) { code, modifiers in
+                    var next = model.settings
+                    next.hotKeyCode = code
+                    next.hotKeyModifiers = modifiers
+                    next.f4Enabled = true
+                    model.settings = next
+                }
+            }
+            Section("终端") {
+                Toggle("启用快捷键打开终端", isOn: $model.settings.terminalHotKeyEnabled)
+                HotKeyEditor(title: "终端快捷键", label: model.terminalHotKeyLabel) { code, modifiers in
+                    var next = model.settings
+                    next.terminalHotKeyCode = code
+                    next.terminalHotKeyModifiers = modifiers
+                    next.terminalHotKeyEnabled = true
+                    model.settings = next
+                }
+                LabeledContent("启动目录") {
+                    HStack(spacing: 8) {
+                        TextField("默认为主目录", text: $model.settings.terminalDirectory)
+                        Button("选择…") { model.chooseTerminalDirectory() }
+                    }
+                }
+                LabeledContent("终端应用") {
+                    HStack(spacing: 8) {
+                        Text(model.terminalAppLabel)
+                        Button("选择…") { model.chooseTerminalApp() }
+                    }
+                }
+                Text("按下快捷键后打开一个新的终端窗口，工作目录固定为上面配置的目录。目录和应用也可在未启用快捷键时先配好。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("触控板手势") {
                 Toggle("三指捏合打开菜单栏收纳", isOn: $model.settings.pinchThree)
@@ -356,14 +387,16 @@ private struct ReorganizeSheet: View {
 }
 
 private struct HotKeyEditor: View {
-    @ObservedObject var model: AppModel
+    var title: String
+    var label: String
+    var onRecord: (UInt32, UInt32) -> Void
     @State private var recording = false
     @State private var monitor: Any?
 
     var body: some View {
-        LabeledContent("全局快捷键") {
+        LabeledContent(title) {
             HStack(spacing: 8) {
-                Text(recording ? "请按下组合键，Esc 取消" : model.hotKeyLabel)
+                Text(recording ? "请按下组合键，Esc 取消" : label)
                     .foregroundStyle(recording ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                 Button(recording ? "取消" : "录制更改") {
                     if recording { stop() } else { begin() }
@@ -385,11 +418,7 @@ private struct HotKeyEditor: View {
             let modifiers = HotKeyCenter.carbonModifiers(event.modifierFlags)
             let code = UInt32(event.keyCode)
             DispatchQueue.main.async {
-                var next = model.settings
-                next.hotKeyCode = code
-                next.hotKeyModifiers = modifiers
-                next.f4Enabled = true
-                model.settings = next
+                onRecord(code, modifiers)
                 stop()
             }
             return nil

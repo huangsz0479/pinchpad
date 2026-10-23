@@ -284,28 +284,37 @@ enum LoginItem {
 
 final class HotKeyCenter {
     static let shared = HotKeyCenter()
-    var onPress: (() -> Void)?
-    private var hotKey: EventHotKeyRef?
+    /// EventHotKeyID.id：面板快捷键用 1，终端快捷键用 2。Carbon 回调按它分发。
+    static let launcherID: UInt32 = 1
+    static let terminalID: UInt32 = 2
+    private var handlers: [UInt32: () -> Void] = [:]
+    private var hotKeys: [UInt32: EventHotKeyRef] = [:]
     private var installed = false
 
+    func handle(_ id: UInt32) {
+        handlers[id]?()
+    }
+
     @discardableResult
-    func apply(enabled: Bool, keyCode: UInt32, modifiers: UInt32) -> String? {
+    func apply(id: UInt32, enabled: Bool, keyCode: UInt32, modifiers: UInt32, onPress: @escaping () -> Void) -> String? {
         if !installed {
             var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
             InstallEventHandler(GetApplicationEventTarget(), pinchpadHotKeyHandler, 1, &spec, nil, nil)
             installed = true
         }
-        if let hotKey {
+        if let hotKey = hotKeys[id] {
             UnregisterEventHotKey(hotKey)
-            self.hotKey = nil
+            hotKeys[id] = nil
         }
+        handlers[id] = onPress
         guard enabled else { return nil }
-        let identity = EventHotKeyID(signature: 0x4750_4144, id: 1)
+        var hotKey: EventHotKeyRef?
+        let identity = EventHotKeyID(signature: 0x4750_4144, id: id)
         let status = RegisterEventHotKey(keyCode, modifiers, identity, GetApplicationEventTarget(), 0, &hotKey)
-        if status != noErr {
-            self.hotKey = nil
+        guard status == noErr else {
             return "快捷键没有生效，可能已被系统或其他应用占用。"
         }
+        hotKeys[id] = hotKey
         return nil
     }
 
@@ -335,11 +344,25 @@ final class HotKeyCenter {
             123: "←", 124: "→", 125: "↓", 126: "↑"
         ]
         if let name = named[keyCode] { return name }
-        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
-            return "键\(keyCode)"
+        if let translated = translate(keyCode) { return translated }
+        if let ansi = ansiKeys[keyCode] { return ansi }
+        return "键\(keyCode)"
+    }
+
+    /// 当前输入源若是中文输入法，就没有 UnicodeKeyLayoutData，翻译会失败——
+    /// 先拿「键盘布局」源（始终有布局数据），再退回当前输入源。
+    private static func keyboardLayoutData() -> Data? {
+        for copy in [TISCopyCurrentKeyboardLayoutInputSource, TISCopyCurrentKeyboardInputSource] {
+            if let source = copy()?.takeRetainedValue(),
+               let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) {
+                return Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+            }
         }
-        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+        return nil
+    }
+
+    private static func translate(_ keyCode: UInt32) -> String? {
+        guard let data = keyboardLayoutData() else { return nil }
         var deadKeyState: UInt32 = 0
         var length = 0
         var chars = [UniChar](repeating: 0, count: 4)
@@ -351,13 +374,33 @@ final class HotKeyCenter {
                 &deadKeyState, chars.count, &length, &chars
             )
         }
-        guard status == noErr, length > 0 else { return "键\(keyCode)" }
+        guard status == noErr, length > 0 else { return nil }
         return String(utf16CodeUnits: chars, count: length).uppercased()
     }
+
+    /// ANSI 物理键位兜底表：布局数据拿不到时，字母/数字/符号仍显示真实字符。
+    private static let ansiKeys: [UInt32: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V",
+        11: "B", 12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T",
+        18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
+        27: "-", 24: "=", 33: "[", 30: "]", 42: "\\", 41: ";", 39: "'", 43: ",", 47: ".", 44: "/", 50: "`",
+        31: "O", 32: "U", 34: "I", 35: "P", 37: "L", 38: "J", 40: "K", 45: "N", 46: "M",
+        65: "小键盘.", 67: "小键盘*", 69: "小键盘+", 75: "小键盘/", 76: "小键盘↩",
+        78: "小键盘-", 81: "小键盘=", 82: "小键盘0", 83: "小键盘1", 84: "小键盘2",
+        85: "小键盘3", 86: "小键盘4", 87: "小键盘5", 88: "小键盘6", 89: "小键盘7",
+        91: "小键盘8", 92: "小键盘9"
+    ]
 }
 
 private func pinchpadHotKeyHandler(_ next: EventHandlerCallRef?, _ event: EventRef?, _ user: UnsafeMutableRawPointer?) -> OSStatus {
-    DispatchQueue.main.async { HotKeyCenter.shared.onPress?() }
+    var hotKeyID = EventHotKeyID()
+    let status = GetEventParameter(
+        event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+        nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID
+    )
+    guard status == noErr else { return status }
+    let id = hotKeyID.id
+    DispatchQueue.main.async { HotKeyCenter.shared.handle(id) }
     return noErr
 }
 
