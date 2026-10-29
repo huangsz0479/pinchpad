@@ -1,8 +1,9 @@
 import QuartzCore
 
 enum PanelAnimation {
-    static let opacityDuration: CFTimeInterval = 0.13
-    static let closingDuration: CFTimeInterval = 0.18
+    static let opacityDuration: CFTimeInterval = 0.18
+    static let closingDuration: CFTimeInterval = 0.16
+    static let timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0, 0.25, 1)
 
     static func frameRateRange(maximumFramesPerSecond: Int) -> CAFrameRateRange {
         let maximum = Float(maximumFramesPerSecond > 0 ? maximumFramesPerSecond : 60)
@@ -15,7 +16,7 @@ enum PanelAnimation {
         fade.fromValue = fromOpacity
         fade.toValue = 1
         fade.duration = opacityDuration
-        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        fade.timingFunction = timingFunction
         fade.preferredFrameRateRange = frameRateRange(maximumFramesPerSecond: maximumFramesPerSecond)
         return fade
     }
@@ -25,7 +26,7 @@ enum PanelAnimation {
         fade.fromValue = fromOpacity
         fade.toValue = 0
         fade.duration = closingDuration
-        fade.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        fade.timingFunction = timingFunction
         fade.preferredFrameRateRange = frameRateRange(maximumFramesPerSecond: maximumFramesPerSecond)
         return fade
     }

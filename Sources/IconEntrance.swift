@@ -3,9 +3,13 @@ import Foundation
 /// Shared choreography and event policy for the original center-out icon wave.
 enum IconEntrance {
     static let ringCount = 4
-    static let ringDelay: TimeInterval = 0.03
-    static let duration: TimeInterval = 0.22
-    static let initialScale: CGFloat = 0.82
+    static let ringDelay: TimeInterval = 0.024
+    static let duration: TimeInterval = 0.32
+    static let initialScale: CGFloat = 0.90
+    static let totalDuration = duration + Double(ringCount - 1) * ringDelay
+
+    /// Zero endpoint velocity avoids the old ease-out's immediate kick and hard visual stop.
+    static let curve = (x1: 0.25, y1: 0.0, x2: 0.25, y2: 1.0)
 
     struct Signal: Equatable {
         var reset: Int

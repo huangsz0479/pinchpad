@@ -48,6 +48,19 @@ struct PanelAnimationProbe {
         print("PASS: rapid open/close preserves opacity and high-refresh hints")
     }
 
+    static func checkFadeEndpoints() throws {
+        for fade in [PanelAnimation.opening(maximumFramesPerSecond: 120),
+                     PanelAnimation.closing(fromOpacity: 1, maximumFramesPerSecond: 120)] {
+            var first: [Float] = [0, 0]
+            var second: [Float] = [0, 0]
+            fade.timingFunction?.getControlPoint(at: 1, values: &first)
+            fade.timingFunction?.getControlPoint(at: 2, values: &second)
+            try require(first[0] > 0 && first[1] == 0 && second[0] < 1 && second[1] == 1,
+                        "Panel fade starts or stops at nonzero speed instead of joining smoothly")
+        }
+        print("PASS: panel fades ease into and out of rest without cutting the animation")
+    }
+
     static func checkIconWave() throws {
         typealias Signal = IconEntrance.Signal
         let idle = Signal(reset: 0, bloom: 0)
@@ -77,9 +90,13 @@ struct PanelAnimationProbe {
                     "Wave must progress from the center to the outer corners")
         let rings = Set((0..<49).map { IconEntrance.ring(for: $0, columns: 7, rows: 7) })
         try require(rings == Set(0..<4), "The original four rings must remain distinct")
-        try require(IconEntrance.ringCount == 4 && IconEntrance.ringDelay == 0.03
-                    && IconEntrance.duration == 0.22 && IconEntrance.initialScale == 0.82,
-                    "Original icon-wave scale and timings changed")
+        try require(IconEntrance.ringCount == 4 && IconEntrance.ringDelay > 0
+                    && IconEntrance.ringDelay < IconEntrance.duration
+                    && IconEntrance.initialScale > 0 && IconEntrance.initialScale < 1,
+                    "Icon wave lost its overlapping center-out expansion")
+        try require(IconEntrance.curve.y1 == 0 && IconEntrance.curve.y2 == 1
+                    && IconEntrance.curve.x1 > 0 && IconEntrance.curve.x2 < 1,
+                    "Icon motion must start and settle with zero velocity")
         print("PASS: original four-ring wave, repeated openings, offscreen pages, page changes and Reduce Motion")
     }
 
@@ -87,6 +104,7 @@ struct PanelAnimationProbe {
         do {
             for maximum in [60, 120, 144, 240, 0] { try checkOpening(maximum: maximum) }
             try checkInterruptedOpening()
+            try checkFadeEndpoints()
             try checkIconWave()
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)

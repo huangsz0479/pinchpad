@@ -454,11 +454,26 @@ private struct GridMetrics: Equatable {
 
 private struct JellyPages: View {
     @ObservedObject var model: AppModel
-    @ObservedObject private var paging: PagingMotion
+    @State private var isSwiping: Bool
+    @State private var residentPageIDs: [UUID] = []
+    @State private var pageHistory = PageHistory()
+
+    // Bookkeeping must not trigger a second grid update for every page turn.
+    private final class PageHistory {
+        var lastPresentedID: UUID?
+    }
+
+    private struct Warmup: Hashable {
+        var pages: [UUID]
+        var page: Int
+        var isSwiping: Bool
+        var isDragging: Bool
+        var isOpen: Bool
+    }
 
     init(model: AppModel) {
         self.model = model
-        self.paging = model.paging
+        _isSwiping = State(initialValue: model.paging.isSwiping)
     }
 
     var body: some View {
@@ -472,55 +487,131 @@ private struct JellyPages: View {
                 showsNames: !model.settings.hideNames
             )
             let page = model.clampedPage
-            let residentCount = min(model.pages.count, 3)
-            let residentStart = min(max(page - 1, 0), max(model.pages.count - residentCount, 0))
-            let residentPages = residentStart..<(residentStart + residentCount)
-            HStack(spacing: 0) {
-                ForEach(Array(model.pages.enumerated()), id: \.element.id) { index, _ in
-                    // 最多保留三页，窗口在首尾向内夹紧；三页应用库来回翻页时，
-                    // 不再于动画开始的一刻卸载、重建另一端暂时不可见的整页图标。
-                    if residentPages.contains(index) {
-                        let pageSlots = model.slots(on: index)
-                        let capacity = max(model.settings.columns, 1) * max(model.settings.rows, 1)
-                        let lastPageIsShort = index == model.pages.count - 1 && pageSlots.count < capacity
-                        IconGrid(
-                            model: model,
-                            slots: pageSlots,
-                            metrics: metrics,
-                            columns: model.settings.columns,
-                            pinsToStart: lastPageIsShort,
-                            state: IconGrid.State(
-                                model, slots: pageSlots, isActivePage: index == page,
-                                tracksSlotFrames: !paging.isSwiping
-                                    && (index == page || (model.draggingID != nil && abs(index - page) <= 1))
+            let pageIDs = model.pages.map(\.id)
+            let activePageID = pageIDs.indices.contains(page) ? pageIDs[page] : nil
+            let residentIDs = PageResidency.retaining(
+                pageIDs, active: page, previous: residentPageIDs,
+                preloadNeighbors: residentPageIDs.isEmpty || isSwiping || model.draggingID != nil,
+                protecting: pageHistory.lastPresentedID,
+                pinned: model.settings.returnToFirstPage ? pageIDs.first : nil
+            )
+            PagingTranslation(paging: model.paging, page: page, width: width,
+                              isDragging: model.draggingID != nil) {
+                HStack(spacing: 0) {
+                    ForEach(Array(model.pages.enumerated()), id: \.element.id) { index, item in
+                        // 保留邻页和最近访问的页面（最多五页），避免往返翻页在动画
+                        // 起点反复重建整页；未访问的远页仍然只占一个空占位。
+                        if residentIDs.contains(item.id) {
+                            let pageSlots = model.slots(on: index)
+                            let capacity = max(model.settings.columns, 1) * max(model.settings.rows, 1)
+                            let lastPageIsShort = index == model.pages.count - 1 && pageSlots.count < capacity
+                            IconGrid(
+                                model: model,
+                                slots: pageSlots,
+                                metrics: metrics,
+                                columns: model.settings.columns,
+                                pinsToStart: lastPageIsShort,
+                                state: IconGrid.State(
+                                    model, slots: pageSlots, isActivePage: index == page,
+                                    tracksSlotFrames: !isSwiping
+                                        && (index == page || (model.draggingID != nil && abs(index - page) <= 1))
+                                )
                             )
-                        )
-                        .equatable()
-                        .frame(width: width, height: geo.size.height)
-                    } else {
-                        Color.clear
+                            .equatable()
                             .frame(width: width, height: geo.size.height)
+                        } else {
+                            Color.clear
+                                .frame(width: width, height: geo.size.height)
+                        }
                     }
                 }
             }
-            .offset(x: -CGFloat(page) * width + paging.offset)
-            .animation(
-                model.draggingID != nil ? .easeOut(duration: 0.16)
-                    : (paging.isSwiping ? nil : .spring(response: 0.42, dampingFraction: 0.84)),
-                value: page
-            )
-            .animation(
-                paging.isSwiping ? nil : .spring(response: 0.42, dampingFraction: 0.84),
-                value: paging.offset
-            )
             .frame(width: width, height: geo.size.height, alignment: .leading)
             .clipped()
+            .onChange(of: residentIDs, initial: true) { _, ids in residentPageIDs = ids }
+            .onChange(of: activePageID, initial: true) { _, id in pageHistory.lastPresentedID = id }
+            .task(id: Warmup(pages: pageIDs, page: page, isSwiping: isSwiping,
+                             isDragging: model.draggingID != nil, isOpen: model.isOpen)) {
+                guard model.isOpen, !isSwiping, model.draggingID == nil else { return }
+                // 当前页和进入页已驻留。新出现的外侧邻页等弹簧收尾再构造，
+                // 避免每翻一页在第一帧同步创建几十个离屏图标。
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                guard !Task.isCancelled, model.isOpen, model.clampedPage == page,
+                      !model.paging.isSwiping, model.draggingID == nil else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    residentPageIDs = PageResidency.retaining(
+                        model.pages.map(\.id), active: model.clampedPage, previous: residentPageIDs,
+                        pinned: model.settings.returnToFirstPage ? model.pages.first?.id : nil
+                    )
+                }
+            }
             .background {
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0).onChanged { _ in model.closeFromPointer() })
             }
         }
+        .onReceive(model.paging.$isSwiping.removeDuplicates()) { isSwiping = $0 }
+    }
+}
+
+/// 每个滑动采样只更新这一层位移；网格内容不订阅连续 offset。
+private struct PagingTranslation<Content: View>: View {
+    @ObservedObject var paging: PagingMotion
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let page: Int
+    let width: CGFloat
+    let isDragging: Bool
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        let position = -CGFloat(page) * width + paging.offset
+        let viewportChanged = paging.presentation.sample.map { abs($0.pageWidth - width) > 0.5 } ?? false
+        content
+            .modifier(PagingLayoutPosition(position: position))
+            .modifier(PagingPosition(position: position, destination: position, width: width,
+                                     presentation: paging.presentation).ignoredByLayout())
+            // One absolute position owns the spring. Page and drag offset must
+            // not retarget separate implicit animations during the same input.
+            .animation(paging.isSwiping ? nil
+                : (reduceMotion ? .easeOut(duration: 0.15)
+                    : (isDragging ? .easeOut(duration: 0.16)
+                        : .spring(response: 0.42, dampingFraction: 0.84))), value: position)
+            .transaction { transaction in
+                if paging.isSwiping || viewportChanged {
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
+                }
+            }
+    }
+}
+
+/// Hit-test geometry follows the settled destination once, not every spring
+/// sample. The separate visual delta below preserves the animated position.
+private struct PagingLayoutPosition: GeometryEffect {
+    let position: CGFloat
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: position, y: 0))
+    }
+}
+
+private struct PagingPosition: GeometryEffect {
+    var position: CGFloat
+    let destination: CGFloat
+    let width: CGFloat
+    let presentation: PagingPresentation
+
+    var animatableData: CGFloat {
+        get { position }
+        set { position = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        presentation.record(position: position, pageWidth: width)
+        return ProjectionTransform(CGAffineTransform(translationX: position - destination, y: 0))
     }
 }
 
@@ -644,6 +735,8 @@ private struct IconGrid: View, Equatable {
                                 .animation(Self.reorderSpring, value: slots)
                         }
                     }
+                    // offset 不参与布局；显式给每环完整网格画布，缩放才绕同一网格中心。
+                    .frame(width: gridWidth, height: gridHeight, alignment: .topLeading)
                 }
                 .zIndex(
                     ringed[ring].contains { $0.slot.id == model.folderHoverID } ? 2
@@ -1011,8 +1104,8 @@ private struct FolderIcon: View {
 /// 保留原来的中心向外波纹：每环合成一组，只变化缩放和透明度。
 /// 面板关闭后仍由 AppDelegate 移出显示列表，不保持全屏毛玻璃常驻。
 private struct BloomIn<Content: View>: View {
-    /// 复位和播放合并观察，以支持同一帧打开；所有页共享信号，翻页不会重播。
-    @ObservedObject var entrance: EntranceMotion
+    // 信号观察只存在于下面的轻量接收器；离屏环不会因广播重算内容。
+    let entrance: EntranceMotion
     var delay: Double
     var tracksResets = true
     var enabled = true
@@ -1020,11 +1113,6 @@ private struct BloomIn<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = true
     @State private var scheduledSignal: IconEntrance.Signal?
-
-    private var signal: IconEntrance.Signal {
-        IconEntrance.Signal(reset: tracksResets ? entrance.signal.reset : 0,
-                            bloom: entrance.signal.bloom)
-    }
 
     var body: some View {
         content
@@ -1036,42 +1124,75 @@ private struct BloomIn<Content: View>: View {
                 // 面板隐藏时 AppDelegate 会调用 prepareEntrance() 把它复位成隐藏态。
                 appeared = true
             }
-            .onChange(of: signal) { old, new in
-                scheduledSignal = nil
-                switch IconEntrance.action(from: old, to: new, enabled: enabled, reduceMotion: reduceMotion) {
-                case .none:
-                    break
-                case .show:
-                    setAppeared(true)
-                case .reset:
-                    setAppeared(false)
-                case .animate:
-                    bloomIn(signal: new)
+            .background {
+                EntranceSignalReceiver(entrance: entrance, tracksResets: tracksResets) { old, new in
+                    scheduledSignal = nil
+                    switch IconEntrance.action(from: old, to: new, enabled: enabled, reduceMotion: reduceMotion) {
+                    case .none:
+                        break
+                    case .show:
+                        setAppeared(true)
+                    case .reset:
+                        setAppeared(false)
+                    case .animate:
+                        bloomIn(signal: new)
+                    }
                 }
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             }
             .onDisappear { scheduledSignal = nil }
     }
 
-    /// 先确保处于隐藏态（无动画），下一帧再按环的 delay 弹出。
+    /// 已在隐藏面板中复位的环直接起步，避免无意义地再等一轮主循环。
+    /// 只有复位/播放合并且尚未隐藏的新目标页才需要先提交隐藏状态。
     /// 刻意不放 .blur：SwiftUI 的 blur 是进程内逐帧重渲染的滤镜，几十个格子
     /// 一起跑会把 CPU 打满；纯 scale/opacity 变换才能跑在合成器里。
     private func setAppeared(_ value: Bool) {
+        guard appeared != value else { return }
         var instant = Transaction()
         instant.disablesAnimations = true
         withTransaction(instant) { appeared = value }
     }
 
     private func bloomIn(signal: IconEntrance.Signal) {
-        setAppeared(false)
+        let needsHiddenCommit = appeared
+        if needsHiddenCommit { setAppeared(false) }
         scheduledSignal = signal
-        DispatchQueue.main.async {
-            // 关闭或重置后，上一轮排队的入场不能再次把隐藏图标点亮。
-            guard scheduledSignal == signal else { return }
-            scheduledSignal = nil
-            withAnimation(.easeOut(duration: IconEntrance.duration).delay(delay)) {
-                appeared = true
-            }
+        if needsHiddenCommit {
+            DispatchQueue.main.async { play(signal: signal) }
+        } else {
+            play(signal: signal)
         }
+    }
+
+    private func play(signal: IconEntrance.Signal) {
+        // 关闭或重置后，上一轮排队的入场不能再次把隐藏图标点亮。
+        guard scheduledSignal == signal else { return }
+        scheduledSignal = nil
+        let curve = IconEntrance.curve
+        withAnimation(.timingCurve(curve.x1, curve.y1, curve.x2, curve.y2,
+                                   duration: IconEntrance.duration).delay(delay)) {
+            appeared = true
+        }
+    }
+}
+
+/// 接收时保持 SwiftUI 的更新顺序：先应用新页的 enabled，再处理合并的 reset/play。
+/// 同步订阅 Published 会在 open() 尚未切换视图到首页时，提前把波纹发给旧页。
+private struct EntranceSignalReceiver: View {
+    @ObservedObject var entrance: EntranceMotion
+    var tracksResets: Bool
+    var receive: (IconEntrance.Signal, IconEntrance.Signal) -> Void
+
+    private var signal: IconEntrance.Signal {
+        IconEntrance.Signal(reset: tracksResets ? entrance.signal.reset : 0,
+                            bloom: entrance.signal.bloom)
+    }
+
+    var body: some View {
+        Color.clear.onChange(of: signal, receive)
     }
 }
 

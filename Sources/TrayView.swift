@@ -8,8 +8,9 @@ struct TrayView: View {
     @ObservedObject var model: AppModel
     /// 外层用液态玻璃时为 true：玻璃自带折射边缘，不再叠加 SwiftUI 描边。
     var liquidGlass = false
-    /// 需要收起面板时调用（启动应用、跳全屏面板等）。
+    /// 普通收起保留淡出；应用启动先立即移除面板。
     var onClose: () -> Void
+    var onLaunch: () -> Void
     @State private var adding = false
     @State private var query = ""
     @FocusState private var searchFocused: Bool
@@ -54,7 +55,7 @@ struct TrayView: View {
                     card("菜单栏") {
                         grid {
                             ForEach(model.runningApps) { app in
-                                RunningCell(app: app, model: model, onClose: onClose)
+                                RunningCell(app: app, model: model, onClose: onLaunch)
                             }
                         }
                     }
@@ -62,7 +63,7 @@ struct TrayView: View {
                 card("已收纳") {
                     grid {
                         ForEach(model.pinnedApps) { app in
-                            PinnedCell(app: app, model: model, onClose: onClose)
+                            PinnedCell(app: app, model: model, onClose: onLaunch)
                         }
                         AddCell { adding = true }
                     }
@@ -298,7 +299,7 @@ private struct RunningCell: View {
 
     private func openApplication() {
         onClose()
-        app.open()
+        DispatchQueue.main.async { app.open() }
     }
 
     var body: some View {
@@ -316,7 +317,7 @@ private struct RunningCell: View {
             }
             Button {
                 onClose()
-                app.activate()
+                DispatchQueue.main.async { app.activate() }
             } label: {
                 Label("前置", systemImage: "macwindow.on.rectangle")
             }

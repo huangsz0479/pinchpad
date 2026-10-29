@@ -240,7 +240,8 @@ struct PinchGestureProbe {
         for fingers in [3, 4] {
             for sensitivity in PinchSensitivity.allCases {
                 var classifier = PinchClassifier(sensitivity: sensitivity)
-                _ = classifier.feed(samples(fingers: fingers, radius: 0.3), at: 0) { [3, 4].contains($0) }
+                // Settle the contact count before measuring movement confirmation.
+                _ = classifier.feed(samples(fingers: fingers, radius: 0.3), at: -0.05) { [3, 4].contains($0) }
                 _ = classifier.feed(samples(fingers: fingers, radius: 0.3), at: 0.01) { [3, 4].contains($0) }
                 let first = classifier.feed(samples(fingers: fingers, radius: 0.19), at: 0.02) { [3, 4].contains($0) }
                 let duration = sensitivity.confirmationDuration
@@ -264,7 +265,7 @@ struct PinchGestureProbe {
             try require(sustained == .open, "A stable contraction after a rebound must still activate")
 
             var fluid = PinchClassifier()
-            _ = fluid.feed(samples(fingers: fingers, radius: 0.3), at: 0) { [3, 4].contains($0) }
+            _ = fluid.feed(samples(fingers: fingers, radius: 0.3), at: -0.05) { [3, 4].contains($0) }
             _ = fluid.feed(samples(fingers: fingers, radius: 0.3), at: 0.005) { [3, 4].contains($0) }
             let partial = fluid.feed(samples(fingers: fingers, radius: 0.27), at: 0.01) { [3, 4].contains($0) }
             try require(partial == nil, "Partial movement must not meet the standard amplitude threshold")
@@ -302,7 +303,8 @@ struct PinchGestureProbe {
                 for signal in [PinchSignal.open, .close] {
                     for (movement, minimumSensitivity) in motions {
                         var classifier = PinchClassifier(sensitivity: sensitivity)
-                        let start: Float = signal == .open ? 0.3 : 0.1
+                        // Presets now measure proportional spread, in both directions.
+                        let start: Float = 0.3
                         let end = start + (signal == .open ? -movement : movement)
                         let expected: PinchSignal? = sensitivity.rawValue >= minimumSensitivity.rawValue ? signal : nil
                         for cycle in 0..<2 {
@@ -428,5 +430,26 @@ struct PinchGestureProbe {
                         "System horizontal/vertical swipes must remain available")
         }
         print("PASS: system horizontal and vertical swipes pass through")
+
+        let missingEnd = PinchMonitor()
+        missingEnd.handle(samples: samples(fingers: 4, radius: 0.3), at: 0)
+        missingEnd.handle(samples: samples(fingers: 4, radius: 0.3), at: 0.01)
+        let began = dockEvent(motion: 3)
+        try require(missingEnd.shouldSwallow(type: began.type, event: began),
+                    "A configured inward Dock gesture must begin interception")
+        missingEnd.handle(samples: [], at: 0.02)
+        missingEnd.handle(samples: samples(fingers: 2, radius: 0.2), at: 0.2)
+        try require(!missingEnd.shouldSwallow(type: generic.type, event: generic),
+                    "A missing Dock end event leaks suppression into a new two-finger gesture")
+        print("PASS: a fresh contact sequence clears stale system gesture suppression")
+
+        let contactDropout = preparedMonitor(expanding: false)
+        contactDropout.handle(samples: [], at: 0.28)
+        try require(!contactDropout.shouldSwallow(type: generic.type, event: generic),
+                    "A released contact sequence keeps swallowing generic gesture events")
+        contactDropout.handle(samples: samples(fingers: 4, radius: 0.1), at: 0.29)
+        try require(contactDropout.shouldSwallow(type: generic.type, event: generic),
+                    "A brief sensor dropout loses the already-recognized inward gesture")
+        print("PASS: brief sensor gaps preserve recognition without swallowing released input")
     }
 }

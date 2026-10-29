@@ -501,8 +501,8 @@ private let pinchEventCallback: CGEventTapCallBack = { _, type, event, _ in
     return Unmanaged.passUnretained(event)
 }
 
-private let multitouchCallback: MTFrameCallback = { _, touches, count, _, _ in
-    PinchMonitor.shared.handleTouches(touches, count: Int(count))
+private let multitouchCallback: MTFrameCallback = { device, touches, count, _, _ in
+    PinchMonitor.shared.handleTouches(touches, count: Int(count), deviceID: UInt(bitPattern: device))
 }
 
 // Owns the lifetime of the source that handles filtered gesture events.
@@ -601,9 +601,11 @@ final class PinchMonitor {
     private var classifier = PinchClassifier()
     /// 当前这次系统 Dock 手势（从 began 到 ended）是否整段拦下；nil 表示还没定。
     private var swallowingDock: Bool?
-    private var lastFire = Date.distantPast
+    private var activeDeviceID: UInt?
+    private var activeDeviceLastFrameAt: TimeInterval?
     private var touchGuardUntil = Date.distantPast
     private static let touchTail: TimeInterval = 0.2
+    private static let deviceHandoffDelay: TimeInterval = 0.2
 
     private static let gestureHIDTypeField = CGEventField(rawValue: 110)!
     private static let swipeMotionField = CGEventField(rawValue: 123)!
@@ -628,6 +630,8 @@ final class PinchMonitor {
         stateLock.lock()
         openCounts = counts
         classifier = PinchClassifier(sensitivity: sensitivity)
+        activeDeviceID = nil
+        activeDeviceLastFrameAt = nil
         swallowingDock = nil
         stateLock.unlock()
         if !AXIsProcessTrusted() {
@@ -648,6 +652,8 @@ final class PinchMonitor {
         defer { stateLock.unlock() }
         guard classifier.sensitivity != sensitivity else { return }
         classifier = PinchClassifier(sensitivity: sensitivity)
+        activeDeviceID = nil
+        activeDeviceLastFrameAt = nil
         swallowingDock = nil
     }
 
@@ -656,9 +662,10 @@ final class PinchMonitor {
         guard raw == 29 || raw == 30 else { return false }
         stateLock.lock()
         defer { stateLock.unlock() }
-        let fingersTracked = openCounts.contains(classifier.peak)
+        let fingersTracked = classifier.fingers > 0 && openCounts.contains(classifier.peak)
+        let recognizedOpening = classifier.fingers > 0 && classifier.signal == .open
         guard raw == 30, event.getIntegerValueField(Self.gestureHIDTypeField) == Self.dockSwipeHIDType else {
-            return classifier.signal == .open
+            return recognizedOpening
                 || (swallowingDock == true && classifier.fingers > 0 && classifier.signal != .close)
         }
         // Only replace the system's app-launcher pinch. Show Desktop and other
@@ -674,14 +681,14 @@ final class PinchMonitor {
         } else if classifier.signal == .close {
             swallowingDock = false
         } else if swallowingDock == nil {
-            swallowingDock = fingersTracked || classifier.signal == .open
+            swallowingDock = fingersTracked || recognizedOpening
         }
-        let swallow = swallowingDock ?? (classifier.signal == .open)
+        let swallow = swallowingDock ?? recognizedOpening
         if phase == Self.phaseEnded || phase == Self.phaseCancelled { swallowingDock = nil }
         return swallow
     }
 
-    fileprivate func handleTouches(_ raw: UnsafeMutableRawPointer?, count: Int) {
+    fileprivate func handleTouches(_ raw: UnsafeMutableRawPointer?, count: Int, deviceID: UInt) {
         var samples: [TouchSample] = []
         if let raw, count > 0 {
             samples.reserveCapacity(count)
@@ -692,17 +699,33 @@ final class PinchMonitor {
                 samples.append(TouchSample(id: touch.identifier, state: touch.state, x: point.x, y: point.y))
             }
         }
-        handle(samples: samples)
+        handle(samples: samples, deviceID: deviceID)
     }
 
-    func handle(samples: [TouchSample], at timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    func handle(samples: [TouchSample], at timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                deviceID: UInt = 0) {
         stateLock.lock()
+        let hasContacts = samples.contains(where: \.isDown)
+        if let activeDeviceID, activeDeviceID != deviceID {
+            // An idle second trackpad emits empty frames too. It must not reset
+            // an in-progress gesture from the device actually being touched.
+            let previousDeviceStalled = timestamp - (activeDeviceLastFrameAt ?? timestamp) > Self.deviceHandoffDelay
+            guard hasContacts, classifier.fingers < 2 || previousDeviceStalled else { stateLock.unlock(); return }
+            classifier.reset()
+            swallowingDock = nil
+            self.activeDeviceID = deviceID
+        } else if hasContacts {
+            activeDeviceID = deviceID
+        }
+        activeDeviceLastFrameAt = timestamp
         let counts = openCounts
+        let generation = classifier.resetGeneration
         let signal = classifier.feed(samples, at: timestamp) { counts.contains($0) }
+        if classifier.resetGeneration != generation { swallowingDock = nil }
         let fingers = classifier.peak
         // 只有被判定为捏合（或被整段拦下的 Dock 手势）的触点序列才算手势尾巴，
         // 普通点按本身也会产生按下触点，不能误伤。
-        if samples.contains(where: \.isDown), classifier.kind == .pinch || swallowingDock == true {
+        if classifier.fingers >= 2, classifier.kind == .pinch || swallowingDock == true {
             touchGuardUntil = Date().addingTimeInterval(Self.touchTail)
         }
         stateLock.unlock()
@@ -710,7 +733,7 @@ final class PinchMonitor {
     }
 
     /// 捏合手势进行期间（及抬手后 0.2s 内）的指针点击多半是手势尾巴，应被忽略。
-    /// 普通点击产生的触点不算在内——只有被判定为捏合/被吞掉的 Dock 手势的触点序列才会延长窗口。
+    /// 只在至少两指仍在的已识别手势中续期；最后一指停留和普通点击不会无限延长窗口。
     func pinchPointerGuardUntil() -> Date {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -718,11 +741,8 @@ final class PinchMonitor {
     }
 
     private func claim(open: Bool, fingers: Int) {
-        stateLock.lock()
-        let recent = Date().timeIntervalSince(lastFire) < 0.6
-        if !recent { lastFire = Date() }
-        stateLock.unlock()
-        guard !recent else { return }
+        // The classifier fires once per continuous contact sequence. A global
+        // cooldown would discard a separate, deliberately repeated gesture.
         DispatchQueue.main.async {
             if open { self.onOpen?(fingers) } else { self.onClose?(fingers) }
         }

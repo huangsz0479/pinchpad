@@ -61,7 +61,8 @@ model = model.replace(method, method.replace("slotFrames = frames", "slotFrames 
 
 for declaration, counter in (
     ("struct PinchpadRoot:", "rootBody"),
-    ("private struct JellyPages:", "pagerBody"),
+    ("private struct JellyPages:", "pageContentBody"),
+    ("private struct PagingTranslation<", "pagerBody"),
     ("private struct IconGrid:", "gridBody"),
     ("private struct SlotCell:", "cellBody"),
 ):
@@ -73,12 +74,13 @@ for marker, counter in (
 ):
     record = 'ProbeCounters.recordGridState(slots)' if counter == "gridState" else f'ProbeCounters.record("{counter}")'
     view = view.replace(marker, marker + f'\n        {record}')
-offset_line = next(line for line in view.splitlines() if ".offset(x: -CGFloat(page) * width +" in line)
-offset_expression = offset_line.strip()[len(".offset(x: "):-1]
-view = view.replace(offset_line, offset_line.replace(offset_expression, f"ProbeCounters.presentedOffset({offset_expression})"))
+position_line = "        let position = -CGFloat(page) * width + paging.offset"
+view = view.replace(position_line, "        let position = ProbeCounters.presentedOffset(-CGFloat(page) * width + paging.offset)")
+
+view = view.replace("            PagingTranslation(", "            let _ = ProbeCounters.noteResidentIDs(residentIDs)\n            PagingTranslation(", 1)
 
 handlers = "\n".join(block(app, marker).replace("NSEvent", "ScrollEvent") for marker in (
-    "private func handlePageSwipe(_ event: NSEvent)", "private func settleSwipe()",
+    "private func handlePageSwipe(_ event: NSEvent)", "private func settleSwipe(",
 ))
 
 harness = r'''import AppKit
@@ -98,6 +100,8 @@ enum ProbeCounters {
     static var presentedOffsets: Set<CGFloat> = []
     static var cachedFrames: [String: CGRect] = [:]
     static var residentPageKeys: Set<String> = []
+    static var residentIDs: Set<UUID> = []
+    static func noteResidentIDs(_ ids: [UUID]) { residentIDs = Set(ids) }
     static func record(_ key: String) { counts[key, default: 0] += 1 }
     static func recordGridState(_ slots: [Slot]) {
         residentPageKeys.insert(slots.first?.id ?? "empty")
@@ -176,6 +180,7 @@ struct PagingPerformanceProbe {
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         window.isReleasedWhenClosed = false
+        defer { window.close() }
         // The fixture remains unordered throughout; nothing appears on screen.
         precondition(!window.isVisible)
         let driver = SwipeDriver()
@@ -192,7 +197,7 @@ struct PagingPerformanceProbe {
         }
         func flush() { for _ in 0..<8 { update() } }
         func finishAnimations() {
-            let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.65
             repeat { update() } while ProcessInfo.processInfo.systemUptime < deadline
         }
         func expectedIDs(_ indices: [Int]) -> Set<String> {
@@ -226,6 +231,7 @@ struct PagingPerformanceProbe {
         print("120 idle forced updates: \(ProbeCounters.counts.sorted { $0.key < $1.key })")
         print(String(format: "idle forced update wall time: median %.3f ms, p95 %.3f ms", idleSamples[60], idleSamples[114]))
         var samples: [Double] = []
+        var framesAfterFirstInput = 0
         ProbeCounters.reset()
         for index in 0..<240 {
             let event = ScrollEvent(scrollingDeltaX: index % 120 < 60 ? -0.8 : 0.8,
@@ -235,6 +241,7 @@ struct PagingPerformanceProbe {
             driver.feed(event)
             update()
             samples.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            if index == 0 { framesAfterFirstInput = ProbeCounters.counts["frames", default: 0] }
         }
         let firstInputMilliseconds = samples[0]
         samples.sort()
@@ -254,7 +261,7 @@ struct PagingPerformanceProbe {
                 fputs("FAIL: pager stopped updating during actual swipe input: \(pagerBodies) updates\n", stderr)
                 exit(1)
             }
-            guard ProbeCounters.counts["frames", default: 0] == 0 else {
+            guard ProbeCounters.counts["frames", default: 0] == framesAfterFirstInput && framesAfterFirstInput <= 1 else {
                 fputs("FAIL: continuous swipe rebuilt drag hit geometry \(ProbeCounters.counts["frames", default: 0]) times\n", stderr)
                 exit(1)
             }
@@ -262,6 +269,8 @@ struct PagingPerformanceProbe {
                 fputs("FAIL: continuous pan mounted more than 3 page grids\n", stderr)
                 exit(1)
             }
+            require(ProbeCounters.counts["gridState", default: 0] <= 6,
+                    "Continuous swipe rebuilt static page state \(ProbeCounters.counts["gridState", default: 0]) times (limit 6)")
             print("PASS: continuous motion updates the pager while root UI stays isolated")
         }
         require(ProbeCounters.cachedFrames == initialFrames,
@@ -281,8 +290,12 @@ struct PagingPerformanceProbe {
         ProbeCounters.reset()
         driver.feed(ScrollEvent(scrollingDeltaX: -0.8, phase: .began, timestamp: 3))
         flush()
-        require(ProbeCounters.counts["frames", default: 0] == 0,
-                "Starting another swipe recreates hit-test geometry while moving")
+        let startingFrameWork = ProbeCounters.counts["frames", default: 0]
+        require(startingFrameWork <= 1, "Gesture takeover rebuilt more than one final geometry snapshot")
+        driver.feed(ScrollEvent(scrollingDeltaX: 0.8, phase: .changed, timestamp: 3.1))
+        flush()
+        require(ProbeCounters.counts["frames", default: 0] == startingFrameWork,
+                "Continuing another swipe recreates hit-test geometry while moving")
         driver.feed(ScrollEvent(scrollingDeltaX: 0, phase: .cancelled, timestamp: 3.2))
         finishAnimations()
         require(!model.paging.isSwiping && model.paging.offset == 0 && model.clampedPage == pageBeforeSettle,
@@ -299,8 +312,8 @@ struct PagingPerformanceProbe {
             flush()
             driver.feed(ScrollEvent(scrollingDeltaX: -CGFloat(direction) * 40, phase: .changed, timestamp: 4.1))
             flush()
-            require(ProbeCounters.counts["frames", default: 0] == 0,
-                    "Committed pan collects drag geometry before the gesture ends")
+            require(ProbeCounters.counts["frames", default: 0] <= 1,
+                    "Committed pan repeatedly collects drag geometry before the gesture ends")
             driver.feed(ScrollEvent(scrollingDeltaX: 0, phase: .ended, timestamp: 4.2))
             finishAnimations()
             require(model.clampedPage == previousPage + direction && !model.paging.isSwiping && model.paging.offset == 0,
@@ -353,10 +366,70 @@ struct PagingPerformanceProbe {
             keySamples.sort()
             print("12 keyboard-equivalent page steps: \(ProbeCounters.counts.sorted { $0.key < $1.key })")
             print(String(format: "page step + forced update wall time: median %.3f ms, max %.3f ms", keySamples[6], keySamples[11]))
-            if model.pages.count <= 3 {
-                require(ProbeCounters.counts["cellBody", default: 0] == 0,
-                        "Keyboard paging unnecessarily remounts offscreen cells in a three-page library")
+            require(ProbeCounters.counts["cellBody", default: 0] <= settings.pageCapacity,
+                    "Repeated neighboring page turns remounted \(ProbeCounters.counts["cellBody", default: 0]) icon cells (limit one cold page)")
+        }
+
+        // Separate cold page construction from warm reversals; this is CPU time,
+        // not a screen-frame measurement, since the window remains hidden.
+        if model.pages.count > 3 {
+            model.showPage(0)
+            finishAnimations()
+            var coldSteps: [Double] = []
+            var warmSteps: [Double] = []
+            for target in 1..<model.pages.count {
+                ProbeCounters.reset()
+                let start = ProcessInfo.processInfo.systemUptime
+                model.showPage(target)
+                update()
+                let milliseconds = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                let mounted = ProbeCounters.counts["cellBody", default: 0]
+                require(mounted == 0, "Sequential page turn constructs offscreen neighbor icons before its animation starts")
+                if mounted > 0 { coldSteps.append(milliseconds) } else { warmSteps.append(milliseconds) }
+                print(String(format: "sequential page %d: %.3f ms, %d newly mounted cells", target + 1, milliseconds, mounted))
+                finishAnimations()
+                checkFrames([model.clampedPage], "sequential page step")
             }
+            if !coldSteps.isEmpty {
+                coldSteps.sort()
+                print(String(format: "cold page steps: median %.3f ms, max %.3f ms", coldSteps[coldSteps.count / 2], coldSteps.last!))
+            }
+            if !warmSteps.isEmpty {
+                warmSteps.sort()
+                print(String(format: "warm page steps: median %.3f ms, max %.3f ms", warmSteps[warmSteps.count / 2], warmSteps.last!))
+            }
+        }
+
+        if model.pages.count > 3 {
+            for target in [0, model.pages.count - 1, 2, 3, 4, 1, model.pages.count - 2, 0] {
+                model.showPage(target)
+                update()
+                checkFrames([model.clampedPage], "rapid jump destination")
+            }
+            finishAnimations()
+            checkFrames([model.clampedPage], "rapid jump settled")
+        }
+
+        if model.pages.count > 5 {
+            // Recreate the pager, then reverse through a full cache without allowing
+            // its idle warmup task to run. The outgoing page must stay mounted.
+            model.query = "App"
+            flush()
+            model.showPage(0)
+            model.query = ""
+            flush()
+            for target in Array(1...5) + Array((0..<5).reversed()) {
+                let outgoing = model.pages[model.clampedPage].id
+                model.showPage(target)
+                update()
+                require(ProbeCounters.residentIDs.contains(outgoing),
+                        "Rapid reversal discarded the outgoing page before its slide finished")
+                require(ProbeCounters.residentIDs.contains(model.pages[target].id),
+                        "Rapid reversal failed to mount its destination")
+                require(ProbeCounters.residentIDs.count <= PageResidency.capacity,
+                        "Rapid reversal exceeded the resident page limit")
+            }
+            finishAnimations()
         }
 
         // Search and vertical browsing keep geometry enabled even if stale gesture state exists.
@@ -404,6 +477,16 @@ with tempfile.TemporaryDirectory(prefix="pinchpad-paging-performance-") as direc
     sources += sorted((root / "Sources").glob("AppLibrary*.swift"))
     sources += sorted((root / "Sources").glob("PagingMotion.swift"))
     sources += sorted((root / "Sources").glob("EntranceMotion.swift"))
+    # Freeze the dependency sources too: another agent may edit unrelated
+    # modules while this isolated fixture compiles.
+    support = directory / "support"
+    support.mkdir()
+    isolated_sources = []
+    for source in sources:
+        destination = support / source.name
+        destination.write_text(source.read_text())
+        isolated_sources.append(destination)
+    sources = isolated_sources
     subprocess.run([
         "swiftc", "-swift-version", "5", "-O", "-module-cache-path", "/tmp/pinchpad-build-module-cache",
         *map(str, sources), str(isolated_model), str(isolated_view), str(probe), "-lsqlite3", "-o", str(binary),

@@ -28,12 +28,13 @@ enum PinchSensitivity: Int, Codable, CaseIterable, Identifiable {
     }
 
     var spreadThreshold: Float {
+        // Fraction of the initial pairwise span, independent of hand size.
         switch self {
-        case .veryLow: return 0.095
-        case .low: return 0.082
-        case .standard: return 0.07
-        case .high: return 0.06
-        case .veryHigh: return 0.05
+        case .veryLow: return 0.19
+        case .low: return 0.164
+        case .standard: return 0.14
+        case .high: return 0.12
+        case .veryHigh: return 0.10
         }
     }
 
@@ -50,9 +51,11 @@ struct PinchClassifier {
     enum Kind { case unknown, pinch, swipe }
 
     static let swipeDrift: Float = 0.06
-    static let pairMove: Float = 0.01
     static let minPeakFrames = 2
-    private static let confirmationSpread: Float = 0.025
+    private static let confirmationSpread: Float = 0.05
+    private static let maximumFrameGap: TimeInterval = 0.12
+    private static let contactDropoutGrace: TimeInterval = 0.045
+    private static let fingerCountGrace: TimeInterval = 0.05
 
     private struct Pair: Hashable {
         let a: Int32
@@ -69,18 +72,27 @@ struct PinchClassifier {
     private(set) var fingers = 0
     private(set) var peak = 0
     private(set) var signal: PinchSignal?
+    private(set) var resetGeneration: UInt = 0
     let sensitivity: PinchSensitivity
     private var peakFrames = 0
     private var fired = false
     private var landing: [Int32: (x: Float, y: Float)] = [:]
     private var pairBase: [Pair: Float] = [:]
     private var confirmation: Confirmation?
+    private var lastTimestamp: TimeInterval?
+    private var releasedAt: TimeInterval?
+    private var multiContactBegan: TimeInterval?
+    private var tailConfirmationUntil: TimeInterval?
 
     init(sensitivity: PinchSensitivity = .standard) {
         self.sensitivity = sensitivity
     }
 
-    mutating func reset() { self = PinchClassifier(sensitivity: sensitivity) }
+    mutating func reset() {
+        let generation = resetGeneration &+ 1
+        self = PinchClassifier(sensitivity: sensitivity)
+        resetGeneration = generation
+    }
 
     /// 系统已经把这次手势认作平移（切换空间、调度中心），之后不再判成捏合。
     mutating func markSwipe() {
@@ -92,31 +104,85 @@ struct PinchClassifier {
 
     mutating func feed(_ samples: [TouchSample], at timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime,
                        tracked: (Int) -> Bool) -> PinchSignal? {
-        let touches = samples.filter { $0.isDown && $0.x > -0.5 && $0.x < 1.5 && $0.y > -0.5 && $0.y < 1.5 }
-        guard !touches.isEmpty else {
+        guard timestamp.isFinite else { reset(); return nil }
+        if let previous = lastTimestamp,
+           timestamp < previous || timestamp - previous > Self.maximumFrameGap {
+            let keepRecognition = fired && releasedAt == nil && fingers >= 2
+                && Set(samples.filter(\.isDown).map(\.id)).intersection(landing.keys).count >= 2
+            let previousSignal = signal
             reset()
+            if keepRecognition {
+                // Lost samples invalidate geometric evidence, not an action
+                // already delivered for contacts that never released.
+                fired = true
+                kind = .pinch
+                signal = previousSignal
+            }
+        }
+        lastTimestamp = timestamp
+        var ids = Set<Int32>()
+        let touches = samples.filter {
+            $0.isDown && $0.x > -0.5 && $0.x < 1.5 && $0.y > -0.5 && $0.y < 1.5
+                && ids.insert($0.id).inserted
+        }
+        guard !touches.isEmpty else {
+            // One missing sensor frame must not rearm a gesture that already fired.
+            // A real release starts a fresh gesture when contacts return after the grace.
+            fingers = 0
+            confirmation = nil
+            if releasedAt == nil { releasedAt = timestamp }
             return nil
         }
+        if let releasedAt, touches.count >= 2 {
+            let sharedIDs = ids.intersection(landing.keys).count
+            if timestamp - releasedAt > Self.contactDropoutGrace || sharedIDs < min(touches.count, 2) {
+                reset()
+                lastTimestamp = timestamp
+            }
+            self.releasedAt = nil
+        }
+        if touches.count == 1 {
+            if releasedAt == nil { releasedAt = timestamp }
+            fingers = 1
+            confirmation = nil
+            // Keep peer identities through a brief partial sensor dropout too.
+            // If one finger really remains, the grace expires before the next gesture.
+            return nil
+        }
+        let previousIDs = Set(landing.keys)
+        if previousIDs.count == touches.count && previousIDs != ids {
+            confirmation = nil
+        }
+        if touches.count >= 3 && multiContactBegan == nil { multiContactBegan = timestamp }
         track(touches)
-        guard tracked(peak), peakFrames >= Self.minPeakFrames, fingers >= max(2, peak - 1),
+        let completingThreeFingerPinch = peak == 3 && fingers == 2 && confirmation != nil
+            && timestamp <= (tailConfirmationUntil ?? -.infinity)
+        guard tracked(peak), peakFrames >= Self.minPeakFrames,
+              fingers >= max(3, peak - 1) || completingThreeFingerPinch,
               kind == .unknown, !fired else {
             confirmation = nil
             return nil
         }
 
         var change: Float = 0
+        var baseline: Float = 0
         var shrinking = 0
         var growing = 0
         for i in touches.indices {
             for j in touches.indices where j > i {
-                let delta = Self.distance(touches[i], touches[j]) - (pairBase[Pair(touches[i].id, touches[j].id)] ?? 0)
+                let base = pairBase[Pair(touches[i].id, touches[j].id)] ?? 0
+                let delta = Self.distance(touches[i], touches[j]) - base
                 change += delta
-                if delta < -Self.pairMove { shrinking += 1 }
-                if delta > Self.pairMove { growing += 1 }
+                baseline += base
+                if delta < -max(0.004, base * 0.02) { shrinking += 1 }
+                if delta > max(0.004, base * 0.02) { growing += 1 }
             }
         }
         let pairs = fingers * (fingers - 1) / 2
-        change /= Float(pairs)
+        let absoluteChange = change / Float(pairs)
+        // Use proportional spread so the same pinch works for a small hand span
+        // or either axis of a rectangular trackpad. Keep a small absolute noise floor.
+        change /= max(baseline, 0.001)
 
         var driftX: Float = 0
         var driftY: Float = 0
@@ -128,14 +194,24 @@ struct PinchClassifier {
         let drift = hypotf(driftX, driftY) / Float(fingers)
 
         var proposed: PinchSignal?
-        if abs(change) > Self.confirmationSpread, abs(change) > drift * 0.5 {
-            // 拇指加三指捏合时，离拇指最近的那根手指和别的手指之间的距离可能不变甚至变大，允许少数几对例外。
-            let agree = pairs - (fingers - 2)
+        if abs(change) > Self.confirmationSpread, abs(absoluteChange) > 0.012,
+           abs(absoluteChange) > drift * 0.5 {
+            // 固定拇指、其余手指成组移动时，组内间距不变；连接拇指的
+            // fingers - 1 对距离同向变化就有完整的多指收拢证据。
+            let agree = fingers - 1
             if change < 0, shrinking >= agree {
                 proposed = .open
             } else if change > 0, growing >= agree {
                 proposed = .close
             }
+        }
+        if fingers >= 3 {
+            tailConfirmationUntil = proposed != nil && abs(change) >= sensitivity.spreadThreshold * 0.8
+                ? timestamp + Self.contactDropoutGrace : nil
+        } else if proposed != confirmation?.signal {
+            // Two remaining fingers may finish a nearly complete multi-finger
+            // pinch, but must never originate a gesture or reverse its direction.
+            proposed = nil
         }
         if let proposed {
             if confirmation?.signal != proposed || timestamp < (confirmation?.began ?? timestamp) {
@@ -143,7 +219,8 @@ struct PinchClassifier {
             }
             // 收拢过程中就累计确认；达到档位要求后可直接触发，不额外要求停住。
             if let confirmation, abs(change) > sensitivity.spreadThreshold,
-               timestamp - confirmation.began >= sensitivity.confirmationDuration {
+               timestamp - confirmation.began >= sensitivity.confirmationDuration,
+               peak != 3 || timestamp - (multiContactBegan ?? timestamp) >= Self.fingerCountGrace {
                 kind = .pinch
                 fired = true
                 signal = proposed
@@ -152,7 +229,7 @@ struct PinchClassifier {
         } else {
             confirmation = nil
         }
-        if drift > Self.swipeDrift, drift > abs(change) * 2 { kind = .swipe }
+        if drift > Self.swipeDrift, drift > abs(absoluteChange) * 2 { kind = .swipe }
         return nil
     }
 

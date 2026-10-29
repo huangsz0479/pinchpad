@@ -51,14 +51,14 @@ final class AppModel: ObservableObject {
                 applyLaunchAtLogin()
             }
             if isOpen, settings.hideDockWhileOpen != oldValue.hideDockWhileOpen {
-                onOpenChange?()
+                onOpenChange?(true)
             }
             let layoutChanged = settings.browsing != oldValue.browsing
                 || settings.columns != oldValue.columns
                 || settings.rows != oldValue.rows
                 || settings.showOn != oldValue.showOn
             if isOpen && layoutChanged {
-                onOpenChange?()
+                onOpenChange?(true)
             }
         }
     }
@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
     @Published var pageDirection: Int = 1
     @Published var isOpen = false
     let entrance = EntranceMotion()
+    private var entranceNeedsReplay = true
     @Published var query = ""
     @Published var selection: Set<String> = []
     @Published var openFolderID: UUID?
@@ -112,13 +113,16 @@ final class AppModel: ObservableObject {
     @Published var iconRevision = 0
     private(set) var libraryRevision = 0
 
-    var onOpenChange: (() -> Void)?
+    /// 参数表示是否保留显示/关闭动画；启动应用时立即收起面板。
+    var onOpenChange: ((Bool) -> Void)?
     /// 每次扫描完成后触发（含「无变化」的早退），用于预热面板渲染。
     var onContentReady: (() -> Void)?
     /// 面板淡入/淡出期间为 false：此时不响应 hover，避免和窗口动画抢帧。
     /// 刻意不做 @Published——它只影响事件处理，不应该触发整棵视图树重算。
     var interactionReady = true
     private var ignorePointerUntil = Date.distantPast
+    private var pointerSessionBegan: TimeInterval = 0
+    private var pointerPressBegan: TimeInterval?
     private var suppressPanelCloseUntil = Date.distantPast
     private var edgeTimer: Timer?
     private var pendingHoverID: String?
@@ -278,6 +282,16 @@ final class AppModel: ObservableObject {
         Date() < ignorePointerUntil || Date() < PinchMonitor.shared.pinchPointerGuardUntil()
     }
 
+    func beginPointerSession() {
+        pointerSessionBegan = ProcessInfo.processInfo.systemUptime
+        pointerPressBegan = nil
+    }
+
+    func recordPointerDown(at timestamp: TimeInterval) {
+        guard isOpen, draggingID == nil, timestamp >= pointerSessionBegan else { return }
+        pointerPressBegan = timestamp
+    }
+
     func closeFromPointer() {
         guard !pointerGuarded else { return }
         close()
@@ -287,13 +301,17 @@ final class AppModel: ObservableObject {
         // 已经打开时（Dock 图标被再点一次、open -a 等）不要再走一遍打开流程：
         // 否则会把图标复位成隐藏态却不播动画，面板会变成空的。
         guard !isOpen else { return }
-        prepareEntrance()
+        beginPointerSession()
+        // 淡出尚未结束就重新打开时，当前图标仍在原位；只延续窗口过渡。
+        // 返回另一页则需要为新的目标页播放入场。
+        if settings.returnToFirstPage, currentPage != 0 {
+            currentPage = 0
+            entranceNeedsReplay = true
+        }
+        if entranceNeedsReplay { prepareEntrance() }
         // 只有在应用未激活时才激活；重复 open 时把省下的激活等待让给淡入。
         if !NSApp.isActive {
             NSApp.activate(ignoringOtherApps: true)
-        }
-        if settings.returnToFirstPage, currentPage != 0 {
-            currentPage = 0
         }
         // 下面这些在 completeClose 里都已经清空；只有真的非空才发布，避免隐藏态整树重绘。
         if !query.isEmpty { query = "" }
@@ -301,19 +319,28 @@ final class AppModel: ObservableObject {
         if openFolderID != nil { openFolderID = nil }
         if folderNameEditing { folderNameEditing = false }
         isOpen = true
-        onOpenChange?()
+        onOpenChange?(true)
     }
 
     func prepareEntrance() {
+        entranceNeedsReplay = true
         entrance.prepare()
     }
 
-    func beginEntrance() {
+    @discardableResult
+    func beginEntrance() -> Bool {
+        guard entranceNeedsReplay else { return false }
+        entranceNeedsReplay = false
         entrance.play()
+        return true
     }
 
-    func close() {
-        guard isOpen else { return }
+    func close(animated: Bool = true) {
+        guard isOpen else {
+            // 另一入口可能在普通淡出结束前启动应用，仍需立即移除旧面板。
+            if !animated { onOpenChange?(false) }
+            return
+        }
         // 拖拽中关面板（Esc / 点外部 / 捏合）时，否则 60Hz 的 edgeTimer 和
         // 拖拽浮窗会一直留在隐藏态。
         if draggingID != nil {
@@ -322,11 +349,12 @@ final class AppModel: ObservableObject {
         paging.offset = 0
         paging.isSwiping = false
         isOpen = false
-        onOpenChange?()
+        onOpenChange?(animated)
     }
 
     func completeClose() {
         guard !isOpen else { return }
+        entranceNeedsReplay = true
         // 同样只在真正有值时才发布：隐藏面板不需要为四个空值再整树重绘一次。
         if openFolderID != nil { openFolderID = nil }
         if folderNameEditing { folderNameEditing = false }
@@ -524,17 +552,34 @@ final class AppModel: ObservableObject {
     }
 
     func launch(_ app: AppItem) {
-        let url = URL(fileURLWithPath: app.path)
-        if let index = apps.firstIndex(where: { $0.id == app.id }) {
-            apps[index].lastOpenedAt = Date()
-            persist()
+        // 先移除面板，下一轮主循环再联系 Launch Services，避免启动或历史更新
+        // 阻塞点击反馈。Esc、背景点击等普通关闭仍保留淡出动画。
+        close(animated: false)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(
+                at: URL(fileURLWithPath: app.path), configuration: configuration
+            ) { _, error in
+                guard let error else { return }
+                Task { @MainActor in
+                    AppModel.shared.notice = "没能打开应用：\(error.localizedDescription)"
+                }
+            }
+            if let index = self.apps.firstIndex(where: { $0.id == app.id }) {
+                self.apps[index].lastOpenedAt = Date()
+                self.persist()
+            }
         }
-        NSWorkspace.shared.open(url)
-        close()
     }
 
     func activate(_ slot: Slot) {
-        guard !pointerGuarded else { return }
+        // A new mouse press after this panel opened is explicit intent. The pinch
+        // tail only guards releases inherited from the gesture that opened it.
+        let freshPress = pointerPressBegan != nil
+        pointerPressBegan = nil
+        guard draggingID == nil, freshPress || !pointerGuarded else { return }
         if case .app(let id) = slot,
            settings.optionClickUninstall,
            NSEvent.modifierFlags.contains(.option),
@@ -553,6 +598,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleSelect(_ slot: Slot) {
+        pointerPressBegan = nil
         if selection.contains(slot.id) {
             selection.remove(slot.id)
         } else {
@@ -580,6 +626,7 @@ final class AppModel: ObservableObject {
     }
 
     func beginDrag(_ id: String, iconWidth: CGFloat? = nil) {
+        pointerPressBegan = nil
         guard draggingID == nil, !paging.isSwiping, query.isEmpty, openFolderID == nil else { return }
         adoptCustomOrder()
         draggingID = id

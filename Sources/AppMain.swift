@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var auroraView: NSView?
     private var visibilityToken = 0
     private var panelRevealed = false
+    private var interactionReadyAt: TimeInterval = 0
     private var auroraBuilt = false
     private var auroraBuiltSize: CGSize = .zero
     private var auroraBuiltBackdrop: BackdropKind?
@@ -54,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel.shared
-        model.onOpenChange = { [weak self] in self?.sync() }
+        model.onOpenChange = { [weak self] animated in self?.sync(animated: animated) }
         model.onContentReady = { [weak self] in self?.warmPanel() }
         refreshTray()
         installInputMonitor()
@@ -157,14 +158,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showTray()
     }
 
-    func dismissTray() {
+    func dismissTray(animated: Bool = true) {
         guard let trayPanel else { trayShown = false; return }
         trayToken += 1
         let token = trayToken
         trayShown = false
         removeTrayMonitor()
         if trayPanel.isKeyWindow { trayPanel.resignKey() }
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if !animated || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             trayPanel.orderOut(nil)
             trayPanel.alphaValue = 1
             return
@@ -229,7 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if #available(macOS 26, *) { return true }
                 return false
             }(),
-            onClose: { [weak self] in self?.dismissTray() }
+            onClose: { [weak self] in self?.dismissTray() },
+            onLaunch: { [weak self] in self?.dismissTray(animated: false) }
         ))
         host.autoresizingMask = [.width, .height]
         host.sizingOptions = []
@@ -321,27 +323,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
-    private func sync() {
+    private func sync(animated: Bool = true) {
         let model = AppModel.shared
-        visibilityToken += 1
-        let token = visibilityToken
         if model.isOpen {
             dismissTray()
-            ensurePanel()
+            let createdPanel = ensurePanel()
             layout()
+            if createdPanel {
+                // 新 host 先在不可见状态挂载接收器，再发送入场复位/播放信号。
+                // 复用的面板不走这里，淡出中重新打开才能延续现有图标状态。
+                panel?.contentView?.layoutSubtreeIfNeeded()
+                panel?.displayIfNeeded()
+                model.prepareEntrance()
+                panel?.contentView?.layoutSubtreeIfNeeded()
+            }
             setDockHidden(model.settings.hideDockWhileOpen)
             // 已经显示时只重排布局：改设置/换屏触发的 sync 不应该再播一次淡入。
             if !panelRevealed {
+                visibilityToken += 1
                 reveal()
             }
             installOutsideMonitor()
         } else {
+            visibilityToken += 1
+            let token = visibilityToken
             if let sheet = panel?.attachedSheet {
                 panel?.endSheet(sheet, returnCode: .alertSecondButtonReturn)
             }
             panelRevealed = false
             removeOutsideMonitor()
-            conceal(token: token)
+            if animated {
+                conceal(token: token)
+            } else {
+                // Launching another app must release the surface and focus before
+                // Launch Services does any work; ordinary dismissal keeps its fade.
+                model.isOptionPressed = false
+                model.interactionReady = false
+                finishConceal(token: token)
+            }
         }
         model.keepOutOfDock()
     }
@@ -358,16 +377,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func ensurePanel() {
+    @discardableResult
+    private func ensurePanel() -> Bool {
         let windowed = AppModel.shared.settings.browsing == .window
         if let panel, panelWindowed != windowed {
             panel.orderOut(nil)
             panel.delegate = nil
+            // 模式切换会销毁旧窗口；只 orderOut 会留下旧 host 继续订阅模型和入场信号。
+            panel.contentView = nil
+            panel.close()
             self.panel = nil
             self.host = nil
+            self.auroraView = nil
             panelRevealed = false
         }
-        guard panel == nil else { return }
+        guard panel == nil else { return false }
         let panel = KeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: windowed ? [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel] : [.borderless],
@@ -412,6 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         auroraBuilt = false
         auroraBuiltSize = .zero
         auroraBuiltBackdrop = nil
+        return true
     }
 
     private func layout() {
@@ -597,7 +622,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.makeKey()
         }
         attachAuroraMotion()
-        AppModel.shared.beginEntrance()
+        let replayingEntrance = AppModel.shared.beginEntrance()
+        if reduceMotion {
+            interactionReadyAt = 0
+        } else if replayingEntrance {
+            interactionReadyAt = ProcessInfo.processInfo.systemUptime + IconEntrance.totalDuration
+        }
 
         guard !reduceMotion else {
             if let layer = panel.contentView?.layer {
@@ -617,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // 有标题栏的小窗口让整窗一起渐显，视觉更自然。
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = Self.contentFadeDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.timingFunction = PanelAnimation.timingFunction
                 panel.animator().alphaValue = 1
             }, completionHandler: {
                 DispatchQueue.main.async { self.finishReveal(token: token) }
@@ -652,6 +682,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// 背景浮现结束：恢复 hover。
     private func finishReveal(token: Int) {
         guard token == visibilityToken, AppModel.shared.isOpen else { return }
+        let remaining = interactionReadyAt - ProcessInfo.processInfo.systemUptime
+        if remaining > 0 {
+            // Hover changes each icon's scale too. Wait for the outer wave to
+            // settle instead of introducing a second scale during its entrance.
+            DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+                self?.finishReveal(token: token)
+            }
+            return
+        }
         AppModel.shared.interactionReady = true
     }
 
@@ -676,7 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = Self.contentFadeOutDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                context.timingFunction = PanelAnimation.timingFunction
                 panel.animator().alphaValue = 0
             }, completionHandler: {
                 DispatchQueue.main.async { self.finishConceal(token: token) }
@@ -798,6 +837,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if event.type == .leftMouseDown {
             if event.window === statusItem?.button?.window { return event }
+            if event.window === panel {
+                AppModel.shared.recordPointerDown(at: event.timestamp)
+            }
             if let window = event.window, window !== panel, window.level.rawValue > Self.coverLevel.rawValue {
                 return event
             }
@@ -836,22 +878,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return nil
         }
         let phase = event.phase
-        if phase.contains(.began) {
-            swipeAccum = 0
+        let width = max(model.paging.presentation.sample?.pageWidth ?? panel?.frame.width ?? 0, 1)
+        if phase.contains(.began)
+            || (!model.paging.isSwiping && (phase.contains(.changed) || phase.contains(.stationary))) {
+            let presented = model.paging.presentedOffset(on: model.clampedPage)
+            let resisted = (model.clampedPage == 0 && presented > 0)
+                || (model.clampedPage == model.pages.count - 1 && presented < 0)
+            // Undo the edge resistance before accumulating new finger motion.
+            // Otherwise touching an existing bounce would apply resistance twice.
+            swipeAccum = resisted ? presented / 0.42 : presented
             swipeSamples = []
-            model.paging.offset = 0
+            model.paging.interruptedSettlement = !model.paging.isSwiping
+                && abs(presented - model.paging.offset) > 1
             model.paging.isSwiping = true
-        } else if !model.paging.isSwiping, phase.contains(.changed) || phase.contains(.stationary) {
-            swipeAccum = model.paging.offset
-            swipeSamples = []
-            model.paging.isSwiping = true
+            model.paging.offset = presented
         }
         guard model.paging.isSwiping else { return event }
         swipeAccum += dx
         swipeSamples.append((event.timestamp, dx))
         swipeSamples = swipeSamples.filter { event.timestamp - $0.0 < 0.12 }
 
-        let width = max(panel?.frame.width ?? 0, 1)
         var offset = swipeAccum
         let atStart = model.clampedPage <= 0
         let atEnd = model.clampedPage >= model.pages.count - 1
@@ -864,31 +910,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
 
         if phase.contains(.ended) || phase.contains(.cancelled) {
-            settleSwipe()
+            settleSwipe(cancelled: phase.contains(.cancelled))
         }
         return nil
     }
 
-    private func settleSwipe() {
+    private func settleSwipe(cancelled: Bool = false) {
         swipeIdleWork?.cancel()
         swipeIdleWork = nil
         let model = AppModel.shared
         guard model.paging.isSwiping else { return }
-        let width = max(panel?.frame.width ?? 0, 1)
+        let width = max(model.paging.presentation.sample?.pageWidth ?? panel?.frame.width ?? 0, 1)
         let span = max((swipeSamples.last?.0 ?? 0) - (swipeSamples.first?.0 ?? 0), 0.03)
         let velocity = swipeSamples.reduce(0) { $0 + $1.1 } / span
         let flick = abs(velocity) > 520
         let dragged = abs(swipeAccum) > min(180, width * 0.16)
+        let pageDelta: Int
+        if cancelled {
+            pageDelta = 0
+        } else if model.paging.interruptedSettlement {
+            // After catching a spring between pages, decide from its real
+            // position. Its residual offset is not new finger travel.
+            let projected = model.paging.offset + velocity * 0.12
+            let destination = Int((CGFloat(model.clampedPage) - projected / width).rounded())
+            pageDelta = max(-1, min(1, destination - model.clampedPage))
+        } else {
+            pageDelta = dragged || flick ? ((dragged ? swipeAccum : velocity) > 0 ? -1 : 1) : 0
+        }
         let settle: Animation = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             ? .easeOut(duration: 0.15)
             : .spring(response: 0.42, dampingFraction: 0.84)
         withAnimation(settle) {
             model.paging.isSwiping = false
             model.paging.offset = 0
-            if dragged || flick {
-                model.turnPage((dragged ? swipeAccum : velocity) > 0 ? -1 : 1)
-            }
+            if pageDelta != 0 { model.turnPage(pageDelta) }
         }
+        model.paging.interruptedSettlement = false
         swipeAccum = 0
         swipeSamples = []
     }

@@ -26,9 +26,12 @@ def block(source, marker):
 root = Path(__file__).resolve().parents[1]
 app = (root / "Sources/AppMain.swift").read_text()
 model = (root / "Sources/AppModel.swift").read_text()
+view = (root / "Sources/TrayView.swift").read_text()
 delegate_methods = "\n".join(block(app, marker) for marker in (
-    "func dismissTray()", "private func showTray()",
+    "func dismissTray(", "private func showTray()",
 ))
+delegate_methods = delegate_methods.replace("func dismissTray()", "func dismissTray(animated: Bool = true)")
+open_running = block(view, "private func openApplication()")
 refresh = block(model, "func refreshRunningApps()")
 filtering = block(model, "private func userFacing(_ app: NSRunningApplication)")
 press = block(model, "func pressMenuBarItem()")
@@ -85,6 +88,24 @@ struct RunningApp {
     let menuBarItem: AXUIElement
     let menuBarX: CGFloat
 ''' + press + r'''
+    @MainActor func open() {
+        LaunchRecorder.requests += 1
+        LaunchRecorder.openedWhileVisible = LaunchRecorder.panel?.isVisible == true
+        Thread.sleep(forTimeInterval: 0.06)
+    }
+}
+
+@MainActor enum LaunchRecorder {
+    static var requests = 0
+    static var panel: TrayPanel?
+    static var openedWhileVisible = false
+}
+
+@MainActor struct RunningCell {
+    var app: RunningApp
+    var onClose: () -> Void
+''' + open_running + r'''
+    func probeOpen() { openApplication() }
 }
 
 struct CatalogApp { var hidden = false }
@@ -189,8 +210,11 @@ final class CAMediaTimingFunction { init(name: TimingName) {} }
 final class NSAnimationContext {
     var duration: TimeInterval = 0
     var timingFunction: CAMediaTimingFunction?
+    static var durations: [TimeInterval] = []
     static func runAnimationGroup(_ body: (NSAnimationContext) -> Void, completionHandler: (() -> Void)? = nil) {
-        body(NSAnimationContext())
+        let context = NSAnimationContext()
+        body(context)
+        durations.append(context.duration)
         completionHandler?()
     }
 }
@@ -382,6 +406,35 @@ struct TrayOpeningProbe {
         require(!delegate.trayShown && delegate.trayPanel?.isVisible == false && delegate.monitorCount == 0,
                 "Reduce Motion dismissal leaves the organizer visible")
         print("PASS: close/reopen and Reduce Motion preserve visibility, cache refresh and dismissal")
+
+        let launchFailuresBefore = failures.count
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion = false
+        delegate.probeOpen()
+        LaunchRecorder.panel = delegate.trayPanel
+        let animationCount = NSAnimationContext.durations.count
+        let cell = RunningCell(app: RunningApp(application: beta, menuBarItem: MenuItem(2), menuBarX: 100),
+                               onClose: { delegate.dismissTray(animated: false) })
+        let launchStarted = ProcessInfo.processInfo.systemUptime
+        cell.probeOpen()
+        let launchMS = (ProcessInfo.processInfo.systemUptime - launchStarted) * 1_000
+        print(String(format: "organizer launch callback with 60 ms fixture open: %.3f ms", launchMS))
+        require(!delegate.trayShown && delegate.trayPanel?.isVisible == false
+                && delegate.trayPanel?.isKeyWindow == false && delegate.monitorCount == 0,
+                "Launching leaves the organizer visible or capturing input")
+        require(NSAnimationContext.durations.count == animationCount,
+                "Launching waits for an organizer closing animation")
+        require(LaunchRecorder.requests == 0 && launchMS < 20,
+                "Organizer application open blocks the dismissal main-loop turn")
+        require(wait { LaunchRecorder.requests == 1 } && !LaunchRecorder.openedWhileVisible,
+                "Organizer open request did not follow its immediate dismissal")
+        delegate.probeOpen()
+        delegate.dismissTray()
+        require(NSAnimationContext.durations.last == 0.1,
+                "Ordinary organizer dismissal lost its animation")
+        require(wait { delegate.trayPanel?.isVisible == false }, "Final fixture dismissal did not finish")
+        if failures.count == launchFailuresBefore {
+            print("PASS: organizer launch dismisses immediately, defers opening, and retains ordinary close animation")
+        }
         if failures.isEmpty {
             print("PASS: organizer opening scheduling and menu discovery regressions")
         } else {
