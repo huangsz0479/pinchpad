@@ -4,11 +4,15 @@
 # Build artifacts
 .build/
 DerivedData/
+/dist/
 *.o
 *.swiftmodule
 *.swiftdoc
 *.dSYM/
 *.xcuserstate
+
+# Local icon drafts and review exports
+/Design/
 
 # Signing material (never commit local identity)
 *.p12

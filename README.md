@@ -83,8 +83,10 @@ Notes:
 Regenerate the icon (optional):
 
 ```bash
-swift generate-icon.swift <output-iconset-directory> <menubar-icon-output-directory>
+swift generate-icon.swift AppIcon.iconset Resources
 ```
+
+Renders the pale blue app icon and monochrome menu bar glyph from shared geometry. Exports all sizes in `AppIcon.iconset`, `AppIcon.icns`, the 1024px `Resources/AppIcon-master.png`, and 18pt standard and Retina menu bar templates.
 
 ## Usage
 
@@ -194,8 +196,8 @@ Pinchpad/
 │   ├── TrayCornerProbe.swift      # Transparency checks outside rounded corners
 │   ├── TrayPlacementProbe.swift   # Two-pixel menu bar gap and window-level checks
 │   └── TerminalDirectoryProbe.swift # Terminal launches land a new shell in the configured directory
-├── Resources/                 # Menu bar icons
-├── AppIcon.iconset/           # App icon sources
+├── Resources/                 # App icon master and menu bar icons
+├── AppIcon.iconset/           # App icon sizes
 ├── AppIcon.icns
 ├── Info.plist
 ├── generate-icon.swift        # Generates the app icon and menu bar glyph

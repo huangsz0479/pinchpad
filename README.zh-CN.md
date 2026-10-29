@@ -83,8 +83,10 @@ cd Pinchpad
 重新生成图标（可选）：
 
 ```bash
-swift generate-icon.swift <输出.iconset 目录> <菜单栏图标输出目录>
+swift generate-icon.swift AppIcon.iconset Resources
 ```
+
+按同一套几何轮廓绘制浅灰蓝底、蓝色符号的应用图标与单色菜单栏图标，导出全尺寸 `AppIcon.iconset`、`AppIcon.icns`、1024px 的 `Resources/AppIcon-master.png`，以及 18pt 的普通及 Retina 菜单栏模板。
 
 ## 使用
 
@@ -194,8 +196,8 @@ Pinchpad/
 │   ├── TrayCornerProbe.swift      # 圆角外侧像素透明度检查
 │   ├── TrayPlacementProbe.swift   # 菜单栏下方 2px 间距与窗口层级检查
 │   └── TerminalDirectoryProbe.swift # 终端启动后新 shell 落在配置目录的检查
-├── Resources/                 # 菜单栏图标
-├── AppIcon.iconset/           # 应用图标源
+├── Resources/                 # 应用图标原稿与菜单栏图标
+├── AppIcon.iconset/           # 各尺寸应用图标
 ├── AppIcon.icns
 ├── Info.plist
 ├── generate-icon.swift        # 生成应用图标与菜单栏图标

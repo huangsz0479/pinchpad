@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" fill="black">
+  <defs>
+    <path id="tile" d="M4 1H6.5Q8 1 8 2.5V4.6Q8 5.5 7.35 6.15L6.15 7.35Q5.5 8 4.6 8H2.5Q1 8 1 6.5V4Q1 1 4 1Z"/>
+  </defs>
+  <use href="#tile"/>
+  <use href="#tile" transform="rotate(90 9 9)"/>
+  <use href="#tile" transform="rotate(180 9 9)"/>
+  <use href="#tile" transform="rotate(270 9 9)"/>
+  <path d="M8.55 7.45Q9 7 9.45 7.45L10.55 8.55Q11 9 10.55 9.45L9.45 10.55Q9 11 8.55 10.55L7.45 9.45Q7 9 7.45 8.55Z"/>
+</svg>

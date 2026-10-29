@@ -1,255 +1,168 @@
 import AppKit
-import CoreGraphics
 
-// Usage: swift generate-icon.swift <output.iconset> <menubar-out-dir>
-// Renders the Pinchpad app icon and the menu bar template glyph.
-//
-// App icon: a deep-blue squircle plate holding a 3x3 grid of frosted tiles.
-// Tile sizes shrink toward the corners so the grid reads as being "pinched"
-// toward the center; the center tile is a warm accent (the one you launch).
-//
-// Menu bar: the same pinched 3x3 grid as a black template image (alpha only),
-// so macOS tints it for light/dark menu bars automatically.
-
+// Usage: swift generate-icon.swift <output.iconset> <menubar-output-directory>
+// Renders the native matte app icon and its matching 18pt template glyph.
+// The ICNS file is written beside the iconset, using the same base name.
 let args = CommandLine.arguments
-guard args.count >= 3 else { fatalError("usage: swift generate-icon.swift <out.iconset> <menubar-dir>") }
-let outDir = args[1]
-let menuDir = args[2]
-try FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
-try FileManager.default.createDirectory(atPath: menuDir, withIntermediateDirectories: true)
+guard args.count == 3 else {
+    fatalError("usage: swift generate-icon.swift <output.iconset> <menubar-output-directory>")
+}
+let iconset = URL(fileURLWithPath: args[1], isDirectory: true)
+let menuDirectory = URL(fileURLWithPath: args[2], isDirectory: true)
+let icnsURL = iconset.deletingPathExtension().appendingPathExtension("icns")
+let files = FileManager.default
+try files.createDirectory(at: iconset, withIntermediateDirectories: true)
+try files.createDirectory(at: menuDirectory, withIntermediateDirectories: true)
 
-let space = CGColorSpaceCreateDeviceRGB()
+func bitmap(width: Int, height: Int) -> NSBitmapImageRep {
+    NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                     isPlanar: false, colorSpaceName: .deviceRGB,
+                     bytesPerRow: 0, bitsPerPixel: 0)!
+}
 
-// Continuous-corner "squircle" approximated with a superellipse |x|^n + |y|^n = 1.
-func squircle(_ rect: CGRect, _ n: CGFloat = 4.5) -> CGPath {
+func save(_ rep: NSBitmapImageRep, to url: URL) throws {
+    guard let data = rep.representation(using: .png, properties: [:]) else {
+        fatalError("PNG encoding failed: \(url.path)")
+    }
+    try data.write(to: url)
+}
+
+func tile() -> CGPath {
+    let p = CGMutablePath()
+    p.move(to: CGPoint(x: 4, y: 1))
+    p.addLine(to: CGPoint(x: 6.5, y: 1))
+    p.addQuadCurve(to: CGPoint(x: 8, y: 2.5), control: CGPoint(x: 8, y: 1))
+    p.addLine(to: CGPoint(x: 8, y: 4.6))
+    p.addQuadCurve(to: CGPoint(x: 7.35, y: 6.15), control: CGPoint(x: 8, y: 5.5))
+    p.addLine(to: CGPoint(x: 6.15, y: 7.35))
+    p.addQuadCurve(to: CGPoint(x: 4.6, y: 8), control: CGPoint(x: 5.5, y: 8))
+    p.addLine(to: CGPoint(x: 2.5, y: 8))
+    p.addQuadCurve(to: CGPoint(x: 1, y: 6.5), control: CGPoint(x: 1, y: 8))
+    p.addLine(to: CGPoint(x: 1, y: 4))
+    p.addQuadCurve(to: CGPoint(x: 4, y: 1), control: CGPoint(x: 1, y: 1))
+    p.closeSubpath()
+    return p
+}
+
+func drawMark(_ ctx: CGContext, color: CGColor) {
+    ctx.setFillColor(color)
+    for quarter in 0..<4 {
+        ctx.saveGState()
+        ctx.translateBy(x: 9, y: 9)
+        ctx.rotate(by: CGFloat(quarter) * .pi / 2)
+        ctx.translateBy(x: -9, y: -9)
+        ctx.addPath(tile())
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+    let p = CGMutablePath()
+    p.move(to: CGPoint(x: 8.55, y: 7.45))
+    p.addQuadCurve(to: CGPoint(x: 9.45, y: 7.45), control: CGPoint(x: 9, y: 7))
+    p.addLine(to: CGPoint(x: 10.55, y: 8.55))
+    p.addQuadCurve(to: CGPoint(x: 10.55, y: 9.45), control: CGPoint(x: 11, y: 9))
+    p.addLine(to: CGPoint(x: 9.45, y: 10.55))
+    p.addQuadCurve(to: CGPoint(x: 8.55, y: 10.55), control: CGPoint(x: 9, y: 11))
+    p.addLine(to: CGPoint(x: 7.45, y: 9.45))
+    p.addQuadCurve(to: CGPoint(x: 7.45, y: 8.55), control: CGPoint(x: 7, y: 9))
+    p.closeSubpath()
+    ctx.addPath(p)
+    ctx.fillPath()
+}
+
+func menuIcon(scale: Int) -> NSBitmapImageRep {
+    let rep = bitmap(width: 18 * scale, height: 18 * scale)
+    let ctx = NSGraphicsContext(bitmapImageRep: rep)!.cgContext
+    ctx.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+    drawMark(ctx, color: CGColor(gray: 0, alpha: 1))
+    // Set logical size after drawing so AppKit does not scale the context twice.
+    rep.size = NSSize(width: 18, height: 18)
+    return rep
+}
+
+func squircle(_ rect: CGRect) -> CGPath {
     let path = CGMutablePath()
-    let a = rect.width / 2, b = rect.height / 2
-    let cx = rect.midX, cy = rect.midY
-    let p = 2.0 / n
-    let steps = 420
-    for i in 0...steps {
-        let t = CGFloat(i) / CGFloat(steps) * 2 * .pi
-        let c = cos(t), s = sin(t)
-        let x = cx + a * pow(abs(c), p) * (c >= 0 ? 1 : -1)
-        let y = cy + b * pow(abs(s), p) * (s >= 0 ? 1 : -1)
-        if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-        else { path.addLine(to: CGPoint(x: x, y: y)) }
+    for step in 0...480 {
+        let angle = CGFloat(step) / 480 * 2 * .pi
+        let c = cos(angle), s = sin(angle)
+        let point = CGPoint(
+            x: rect.midX + rect.width / 2 * pow(abs(c), 2 / 4.5) * (c >= 0 ? 1 : -1),
+            y: rect.midY + rect.height / 2 * pow(abs(s), 2 / 4.5) * (s >= 0 ? 1 : -1))
+        if step == 0 { path.move(to: point) }
+        else { path.addLine(to: point) }
     }
     path.closeSubpath()
     return path
 }
 
-func bitmap(_ px: Int) -> (NSBitmapImageRep, CGContext) {
-    let rep = NSBitmapImageRep(
-        bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
-        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+func appIcon(pixels: Int) -> NSBitmapImageRep {
+    let rep = bitmap(width: pixels, height: pixels)
     let ctx = NSGraphicsContext(bitmapImageRep: rep)!.cgContext
-    return (rep, ctx)
-}
+    ctx.scaleBy(x: CGFloat(pixels) / 1024, y: CGFloat(pixels) / 1024)
+    let plate = CGRect(x: 100, y: 100, width: 824, height: 824)
+    let path = squircle(plate)
 
-func gradient(_ colors: [CGColor], _ locations: [CGFloat]) -> CGGradient {
-    CGGradient(colorsSpace: space, colors: colors as CFArray, locations: locations)!
-}
-
-// Scale for tile at grid position (r, c): 1.0 at the center, smaller toward corners.
-func pinchScale(_ r: Int, _ c: Int, edge: CGFloat, corner: CGFloat) -> CGFloat {
-    let d = abs(r - 1) + abs(c - 1)
-    switch d {
-    case 0: return 1.0
-    case 1: return edge
-    default: return corner
-    }
-}
-
-// Tile rects for a 3x3 pinched grid centered at `center`, with pitch `pitch`
-// (distance between tile centers) and full tile side `side`.
-func tileRects(center: CGPoint, pitch: CGFloat, side: CGFloat,
-               edge: CGFloat, corner: CGFloat) -> [(rect: CGRect, isCenter: Bool)] {
-    var out: [(CGRect, Bool)] = []
-    for r in 0..<3 {
-        for c in 0..<3 {
-            let k = side * pinchScale(r, c, edge: edge, corner: corner)
-            let cx = center.x + CGFloat(c - 1) * pitch
-            let cy = center.y + CGFloat(r - 1) * pitch
-            out.append((CGRect(x: cx - k / 2, y: cy - k / 2, width: k, height: k), r == 1 && c == 1))
-        }
-    }
-    return out
-}
-
-func renderAppIcon(_ px: Int) -> NSBitmapImageRep {
-    let s = CGFloat(px)
-    let (rep, ctx) = bitmap(px)
-
-    let inset = s * 0.098 // ~100pt margin on a 1024 canvas, per macOS icon grid
-    let plate = CGRect(x: inset, y: inset, width: s - inset * 2, height: s - inset * 2)
-    let platePath = squircle(plate)
-
-    // Soft drop shadow under the plate.
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -s * 0.012), blur: s * 0.018,
-                  color: CGColor(red: 0.05, green: 0.10, blue: 0.30, alpha: 0.45))
-    ctx.addPath(platePath)
-    ctx.setFillColor(CGColor(red: 0.12, green: 0.20, blue: 0.55, alpha: 1))
+    ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 13,
+                  color: CGColor(red: 0.19, green: 0.25, blue: 0.35, alpha: 0.18))
+    ctx.setFillColor(CGColor(red: 0.93, green: 0.95, blue: 0.98, alpha: 1))
+    ctx.addPath(path)
     ctx.fillPath()
     ctx.restoreGState()
 
-    // Plate body: deep blue, brighter toward the top.
     ctx.saveGState()
-    ctx.addPath(platePath)
+    ctx.addPath(path)
     ctx.clip()
-    ctx.drawLinearGradient(gradient([
-        CGColor(red: 0.42, green: 0.62, blue: 1.00, alpha: 1),
-        CGColor(red: 0.20, green: 0.36, blue: 0.92, alpha: 1),
-        CGColor(red: 0.10, green: 0.16, blue: 0.52, alpha: 1),
-    ], [0, 0.55, 1]),
-    start: CGPoint(x: plate.midX, y: plate.maxY),
-    end: CGPoint(x: plate.midX, y: plate.minY), options: [])
-
-    // Radial glow behind the grid so the tiles sit in a pool of light.
-    ctx.drawRadialGradient(gradient([
-        CGColor(red: 1, green: 1, blue: 1, alpha: 0.22),
-        CGColor(red: 1, green: 1, blue: 1, alpha: 0.0),
-    ], [0, 1]),
-    startCenter: CGPoint(x: plate.midX, y: plate.midY + plate.height * 0.08), startRadius: 0,
-    endCenter: CGPoint(x: plate.midX, y: plate.midY + plate.height * 0.08), endRadius: plate.width * 0.55,
-    options: [])
-
-    // Top sheen.
-    ctx.drawLinearGradient(gradient([
-        CGColor(red: 1, green: 1, blue: 1, alpha: 0.20),
-        CGColor(red: 1, green: 1, blue: 1, alpha: 0.0),
-    ], [0, 1]),
-    start: CGPoint(x: plate.midX, y: plate.maxY),
-    end: CGPoint(x: plate.midX, y: plate.maxY - plate.height * 0.45), options: [])
-
-    // Inner rim light.
-    ctx.addPath(platePath)
-    ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.22))
-    ctx.setLineWidth(max(s * 0.006, 0.75))
+    let colors = [CGColor(red: 0.975, green: 0.982, blue: 0.995, alpha: 1),
+                  CGColor(red: 0.912, green: 0.941, blue: 0.980, alpha: 1)]
+    let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                              colors: colors as CFArray, locations: [0, 1])!
+    ctx.drawLinearGradient(gradient,
+                           start: CGPoint(x: 512, y: plate.maxY),
+                           end: CGPoint(x: 512, y: plate.minY), options: [])
+    ctx.addPath(path)
+    ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.8))
+    ctx.setLineWidth(2)
     ctx.strokePath()
     ctx.restoreGState()
 
-    // Pinched 3x3 grid.
-    let pitch = plate.width * 0.265
-    let side = plate.width * 0.215
-    let tiles = tileRects(center: CGPoint(x: plate.midX, y: plate.midY),
-                          pitch: pitch, side: side, edge: 0.86, corner: 0.74)
-
-    let frostSheen = gradient([
-        CGColor(red: 1, green: 1, blue: 1, alpha: 0.35),
-        CGColor(red: 1, green: 1, blue: 1, alpha: 0.0),
-    ], [0, 1])
-    let accent = gradient([
-        CGColor(red: 1.00, green: 0.78, blue: 0.36, alpha: 1),
-        CGColor(red: 1.00, green: 0.55, blue: 0.26, alpha: 1),
-        CGColor(red: 0.98, green: 0.40, blue: 0.30, alpha: 1),
-    ], [0, 0.55, 1])
-
-    // Draw corners/edges first, center last so its glow sits on top.
-    for t in tiles.sorted(by: { !$0.isCenter && $1.isCenter }) {
-        let path = squircle(t.rect, 4.2)
-        if t.isCenter {
-            // Warm glow around the accent tile.
-            ctx.saveGState()
-            ctx.setShadow(offset: .zero, blur: s * 0.035,
-                          color: CGColor(red: 1.0, green: 0.55, blue: 0.25, alpha: 0.55))
-            ctx.addPath(path)
-            ctx.setFillColor(CGColor(red: 1.0, green: 0.6, blue: 0.3, alpha: 1))
-            ctx.fillPath()
-            ctx.restoreGState()
-
-            ctx.saveGState()
-            ctx.addPath(path)
-            ctx.clip()
-            ctx.drawLinearGradient(accent,
-                                   start: CGPoint(x: t.rect.midX, y: t.rect.maxY),
-                                   end: CGPoint(x: t.rect.midX, y: t.rect.minY), options: [])
-            ctx.drawLinearGradient(frostSheen,
-                                   start: CGPoint(x: t.rect.midX, y: t.rect.maxY),
-                                   end: CGPoint(x: t.rect.midX, y: t.rect.maxY - t.rect.height * 0.5), options: [])
-            ctx.addPath(path)
-            ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.35))
-            ctx.setLineWidth(max(s * 0.004, 0.5))
-            ctx.strokePath()
-            ctx.restoreGState()
-        } else {
-            // Frosted glass tile with a soft shadow.
-            ctx.saveGState()
-            ctx.setShadow(offset: CGSize(width: 0, height: -s * 0.006), blur: s * 0.012,
-                          color: CGColor(red: 0.05, green: 0.10, blue: 0.35, alpha: 0.35))
-            ctx.addPath(path)
-            ctx.setFillColor(CGColor(red: 0.93, green: 0.96, blue: 1.0, alpha: 0.92))
-            ctx.fillPath()
-            ctx.restoreGState()
-
-            ctx.saveGState()
-            ctx.addPath(path)
-            ctx.clip()
-            ctx.drawLinearGradient(frostSheen,
-                                   start: CGPoint(x: t.rect.midX, y: t.rect.maxY),
-                                   end: CGPoint(x: t.rect.midX, y: t.rect.maxY - t.rect.height * 0.6), options: [])
-            ctx.addPath(path)
-            ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.5))
-            ctx.setLineWidth(max(s * 0.003, 0.5))
-            ctx.strokePath()
-            ctx.restoreGState()
-        }
-    }
+    // The exact menu bar silhouette, enlarged without changing its geometry.
+    // Its visible 16-unit width occupies 63% of the plate.
+    let scale = plate.width * 0.63 / 16
+    ctx.saveGState()
+    ctx.translateBy(x: 512 - 9 * scale, y: 512 - 9 * scale)
+    ctx.scaleBy(x: scale, y: scale)
+    drawMark(ctx, color: CGColor(red: 0.247, green: 0.439, blue: 0.710, alpha: 1))
+    ctx.restoreGState()
     return rep
 }
-
-// Menu bar template: 18pt canvas. Black fill + alpha only.
-func renderMenuBarIcon(scale: Int) -> NSBitmapImageRep {
-    let pt: CGFloat = 18
-    let px = Int(pt) * scale
-    let (rep, ctx) = bitmap(px)
-    let k = CGFloat(scale)
-    // Grid occupies 16pt: pitch 5.5pt, full tile 4.6pt; corner tiles 3.5pt.
-    let tiles = tileRects(center: CGPoint(x: pt / 2 * k, y: pt / 2 * k),
-                          pitch: 5.5 * k, side: 4.8 * k, edge: 0.86, corner: 0.74)
-    ctx.setFillColor(CGColor(gray: 0, alpha: 1))
-    let mid = pt / 2 * k
-    for t in tiles {
-        // Snap to the pixel grid at 1x so edges stay crisp, mirroring about the
-        // center so left/right and top/bottom tiles stay symmetric.
-        var r = t.rect
-        if scale == 1 {
-            func snap(_ lo: CGFloat, _ hi: CGFloat) -> (CGFloat, CGFloat) {
-                if hi <= mid { return (lo.rounded(.down), hi.rounded(.down)) }
-                if lo >= mid { return (lo.rounded(.up), hi.rounded(.up)) }
-                let half = ((hi - lo) / 2).rounded()
-                return (mid - half, mid + half)
-            }
-            let (x0, x1) = snap(r.minX, r.maxX)
-            let (y0, y1) = snap(r.minY, r.maxY)
-            r = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
-        }
-        let radius = r.width * 0.28
-        ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
-        ctx.fillPath()
-    }
-    return rep
+let specs = [("16x16", 16), ("16x16@2x", 32), ("32x32", 32), ("32x32@2x", 64),
+             ("128x128", 128), ("128x128@2x", 256), ("256x256", 256),
+             ("256x256@2x", 512), ("512x512", 512), ("512x512@2x", 1024)]
+for (name, pixels) in specs {
+    try save(appIcon(pixels: pixels), to: iconset.appendingPathComponent("icon_\(name).png"))
 }
+try save(appIcon(pixels: 1024), to: menuDirectory.appendingPathComponent("AppIcon-master.png"))
+try save(menuIcon(scale: 1), to: menuDirectory.appendingPathComponent("MenuBarIcon.png"))
+try save(menuIcon(scale: 2), to: menuDirectory.appendingPathComponent("MenuBarIcon@2x.png"))
 
-func writePNG(_ rep: NSBitmapImageRep, to path: String) throws {
-    guard let data = rep.representation(using: .png, properties: [:]) else {
-        fatalError("failed to encode \(path)")
-    }
-    try data.write(to: URL(fileURLWithPath: path))
-    print("wrote \(path)")
+// Package the PNG representations directly in the macOS ICNS container.
+// This avoids depending on an iconutil conversion service during asset export.
+func bigEndian(_ value: Int) -> Data {
+    var integer = UInt32(value).bigEndian
+    return withUnsafeBytes(of: &integer) { Data($0) }
 }
+let types = ["icp4", "ic11", "icp5", "ic12", "ic07", "ic13", "ic08", "ic14", "ic09", "ic10"]
+var elements = Data()
+for ((name, _), type) in zip(specs, types) {
+    let png = try Data(contentsOf: iconset.appendingPathComponent("icon_\(name).png"))
+    elements.append(Data(type.utf8))
+    elements.append(bigEndian(png.count + 8))
+    elements.append(png)
+}
+var icns = Data("icns".utf8)
+icns.append(bigEndian(elements.count + 8))
+icns.append(elements)
+try icns.write(to: icnsURL)
 
-let specs: [(name: String, px: Int)] = [
-    ("icon_16x16", 16), ("icon_16x16@2x", 32),
-    ("icon_32x32", 32), ("icon_32x32@2x", 64),
-    ("icon_128x128", 128), ("icon_128x128@2x", 256),
-    ("icon_256x256", 256), ("icon_256x256@2x", 512),
-    ("icon_512x512", 512), ("icon_512x512@2x", 1024),
-]
-for spec in specs {
-    try writePNG(renderAppIcon(spec.px), to: "\(outDir)/\(spec.name).png")
-}
-try writePNG(renderMenuBarIcon(scale: 1), to: "\(menuDir)/MenuBarIcon.png")
-try writePNG(renderMenuBarIcon(scale: 2), to: "\(menuDir)/MenuBarIcon@2x.png")
+print("Exported \(icnsURL.path), 10 icon sizes, and 1x/2x menu bar templates")

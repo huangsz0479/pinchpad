@@ -102,8 +102,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             let image = Bundle.main.image(forResource: "MenuBarIcon")
-                ?? NSImage(systemSymbolName: "square.grid.3x3.fill", accessibilityDescription: "Pinchpad")
+                ?? NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "Pinchpad")
             image?.isTemplate = true
+            image?.size = NSSize(width: 18, height: 18)
             image?.accessibilityDescription = "Pinchpad"
             item.button?.image = image
             item.button?.toolTip = "Pinchpad"
