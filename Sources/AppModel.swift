@@ -11,7 +11,8 @@ final class AppModel: ObservableObject {
     private static let edgeNudgeDelay: TimeInterval = 0.28
     private static let edgeTurnDelay: TimeInterval = 0.55
     private static let edgeDragThreshold: CGFloat = 70
-    private static let gapSettleDelay: TimeInterval = 0.07
+    private static let gapSettleDelay: TimeInterval = 0.045
+    private static let folderHoverDelay: TimeInterval = 0.3
     private static let hotCornerInset: CGFloat = 6
     private static let hotCornerActivationDelay: TimeInterval = 0.12
 
@@ -127,9 +128,7 @@ final class AppModel: ObservableObject {
     private var edgeTimer: Timer?
     private var pendingHoverID: String?
     private var hoverMark: Date?
-    private var lastShiftedOnto: String?
-    private var lastDragX: CGFloat?
-    private var lastDragY: CGFloat?
+    private var previewAnchorPoint: CGPoint?
     private var dragDirty = false
     private var orderAtDragStart: [Slot] = []
     private var previewIndex: Int?
@@ -633,9 +632,7 @@ final class AppModel: ObservableObject {
         folderHoverID = nil
         pendingHoverID = nil
         hoverMark = nil
-        lastShiftedOnto = nil
-        lastDragX = nil
-        lastDragY = nil
+        previewAnchorPoint = nil
         edgeArmed = nil
         dragDirty = false
         orderAtDragStart = pages.flatMap(\.slots)
@@ -669,9 +666,7 @@ final class AppModel: ObservableObject {
         folderHoverID = nil
         pendingHoverID = nil
         hoverMark = nil
-        lastShiftedOnto = nil
-        lastDragX = nil
-        lastDragY = nil
+        previewAnchorPoint = nil
         dragDirty = false
         pendingGap = nil
         pendingGapMark = nil
@@ -1166,7 +1161,7 @@ final class AppModel: ObservableObject {
     }
 
     private func trackPointerDrag() {
-        guard isOpen, let id = draggingID else { return }
+        guard isOpen, draggingID != nil else { return }
         if NSEvent.pressedMouseButtons & 1 == 0 {
             endDrag()
             return
@@ -1176,33 +1171,56 @@ final class AppModel: ObservableObject {
               let content = window.contentView else { return }
         let local = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let point = CGPoint(x: local.x, y: content.bounds.height - local.y)
-        let width = content.bounds.width
-        if point.x < Self.edgeDragThreshold {
-            nudgeDragEdge(-1)
-            return
-        }
-        if point.x > width - Self.edgeDragThreshold {
-            nudgeDragEdge(1)
+        updateDrag(at: point, width: content.bounds.width, now: Date())
+    }
+
+    /// Pointer events and dwell ticks share the same state transition. Keeping
+    /// the geometry/time boundary here also lets synthetic trajectories exercise
+    /// reordering without a window, cursor polling or an event monitor.
+    private func updateDrag(at point: CGPoint, width: CGFloat, now: Date) {
+        guard let id = draggingID else { return }
+        if point.x < Self.edgeDragThreshold || point.x > width - Self.edgeDragThreshold {
+            pendingHoverID = nil
+            hoverMark = nil
+            pendingGap = nil
+            pendingGapMark = nil
+            previewAnchorPoint = nil
+            if folderHoverID != nil { folderHoverID = nil }
+            nudgeDragEdge(point.x < Self.edgeDragThreshold ? -1 : 1)
             return
         }
         edgeArmed = nil
+        // A preview can move a neighboring icon underneath the stationary
+        // pointer. Do not reinterpret that layout motion as a new folder hover.
+        if let anchor = previewAnchorPoint {
+            guard hypot(point.x - anchor.x, point.y - anchor.y) >= 6 else { return }
+            previewAnchorPoint = nil
+        }
         if let icon = iconUnderPointer(point), icon != id {
-            if folderHoverID != icon { folderHoverID = icon }
-            previewIndex = nil
             pendingGap = nil
-            if dragDirty {
-                writeBack(orderAtDragStart)
-                dragDirty = false
+            pendingGapMark = nil
+            if pendingHoverID != icon {
+                pendingHoverID = icon
+                hoverMark = now
+                if folderHoverID != nil { folderHoverID = nil }
+                return
             }
+            if let mark = hoverMark, now.timeIntervalSince(mark) >= Self.folderHoverDelay,
+               folderHoverID != icon {
+                folderHoverID = icon
+            }
+            // Crossing an icon must not undo the preview and snap every shifted
+            // cell back. A deliberate dwell arms folder creation only on drop.
             return
         }
+        pendingHoverID = nil
+        hoverMark = nil
         if folderHoverID != nil { folderHoverID = nil }
         guard let destination = gapInsertionIndex(at: point, dragging: id) else { return }
         guard destination != previewIndex else {
             pendingGap = nil
             return
         }
-        let now = Date()
         if destination != pendingGap {
             pendingGap = destination
             pendingGapMark = now
@@ -1212,6 +1230,7 @@ final class AppModel: ObservableObject {
         pendingGap = nil
         previewIndex = destination
         previewGap(id, at: destination)
+        previewAnchorPoint = point
     }
 
     private func nudgeDragEdge(_ delta: Int) {
@@ -1232,11 +1251,23 @@ final class AppModel: ObservableObject {
             ? clampedPage * capacity
             : min(max(0, flatSlotCount() - 1), (clampedPage + 1) * capacity - 1)
         moveDuringDrag(id, toFlatIndex: destination)
+        orderAtDragStart = pages.flatMap(\.slots)
+        previewIndex = nil
+        previewAnchorPoint = nil
+        pendingGap = nil
+        pendingGapMark = nil
+        pendingHoverID = nil
+        hoverMark = nil
+        folderHoverID = nil
     }
 
     private func iconUnderPointer(_ point: CGPoint) -> String? {
         var best: (String, CGFloat)?
-        for (id, frame) in slotFrames where id != draggingID && frame.contains(point) {
+        for (id, frame) in slotFrames where id != draggingID {
+            let icon = CGRect(x: frame.minX, y: frame.minY, width: frame.width,
+                              height: min(frame.width, frame.height))
+                .insetBy(dx: frame.width * 0.12, dy: frame.width * 0.12)
+            guard icon.contains(point) else { continue }
             let distance = hypot(frame.midX - point.x, frame.midY - point.y)
             if best == nil || distance < best!.1 { best = (id, distance) }
         }
@@ -1369,13 +1400,15 @@ final class AppModel: ObservableObject {
         }
         if !buffer.isEmpty { chunks.append(buffer) }
         if chunks.isEmpty { chunks = [[]] }
-        while pages.count < chunks.count { pages.append(Page()) }
-        if pages.count > chunks.count {
-            pages.removeLast(pages.count - chunks.count)
+        var updated = pages
+        while updated.count < chunks.count { updated.append(Page()) }
+        if updated.count > chunks.count {
+            updated.removeLast(updated.count - chunks.count)
         }
-        for index in pages.indices where pages[index].slots != chunks[index] {
-            pages[index].slots = chunks[index]
+        for index in updated.indices where updated[index].slots != chunks[index] {
+            updated[index].slots = chunks[index]
         }
+        if updated != pages { pages = updated }
     }
 
     private func showDragImage(for id: String, iconWidth: CGFloat? = nil) {

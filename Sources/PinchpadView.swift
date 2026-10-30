@@ -700,6 +700,21 @@ private struct IconGrid: View, Equatable {
 
     static let overflowPadding: CGFloat = 24
     private static let reorderSpring = Animation.spring(response: 0.3, dampingFraction: 0.78)
+    @SwiftUI.State private var entranceMembership = EntranceMembership()
+
+    /// A slot keeps its parent while it moves. Moving it between the four ForEach
+    /// trees would destroy its view, interrupt its gesture and restart rendering.
+    /// Reassign spatial rings only on a hidden entrance reset, after a reorder.
+    private final class EntranceMembership {
+        var rings: [String: Int] = [:]
+
+        func ring(for slot: Slot, index: Int, columns: Int, rows: Int) -> Int {
+            if let ring = rings[slot.id] { return ring }
+            let ring = IconEntrance.ring(for: index, columns: columns, rows: rows)
+            rings[slot.id] = ring
+            return ring
+        }
+    }
 
     var body: some View {
         let columnCount = max(columns, 1)
@@ -714,7 +729,7 @@ private struct IconGrid: View, Equatable {
         let ringed: [[(index: Int, slot: Slot)]] = {
             var buckets: [[(index: Int, slot: Slot)]] = Array(repeating: [], count: ringCount)
             for (index, slot) in slots.enumerated() {
-                let ring = IconEntrance.ring(for: index, columns: columnCount, rows: rowCount)
+                let ring = entranceMembership.ring(for: slot, index: index, columns: columnCount, rows: rowCount)
                 buckets[ring].append((index, slot))
             }
             return buckets
@@ -745,6 +760,21 @@ private struct IconGrid: View, Equatable {
             }
         }
         .frame(width: gridWidth, height: gridHeight, alignment: .topLeading)
+        .background {
+            EntranceSignalReceiver(entrance: model.entrance, tracksResets: true) { old, new in
+                guard old.reset != new.reset else { return }
+                let spatialRings = Dictionary(uniqueKeysWithValues: slots.enumerated().map { index, slot in
+                    (slot.id, IconEntrance.ring(for: index, columns: columnCount, rows: rowCount))
+                })
+                guard spatialRings != entranceMembership.rings else { return }
+                let refreshed = EntranceMembership()
+                refreshed.rings = spatialRings
+                entranceMembership = refreshed
+            }
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .background {
             if state.tracksSlotFrames {
                 GeometryReader { geo in
