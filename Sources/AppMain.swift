@@ -924,8 +924,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let width = max(model.paging.presentation.sample?.pageWidth ?? panel?.frame.width ?? 0, 1)
         let span = max((swipeSamples.last?.0 ?? 0) - (swipeSamples.first?.0 ?? 0), 0.03)
         let velocity = swipeSamples.reduce(0) { $0 + $1.1 } / span
-        let flick = abs(velocity) > 520
-        let dragged = abs(swipeAccum) > min(180, width * 0.16)
+        // A page fills the screen, but finger travel should stay short on a
+        // large display too. Keep a small dead zone so a noisy sample cannot
+        // become a flick just because its timestamp interval is very short.
+        let flick = abs(velocity) > 360 && abs(swipeAccum) >= 14
+        let dragged = abs(swipeAccum) >= min(60, max(36, width * 0.055))
         let pageDelta: Int
         if cancelled {
             pageDelta = 0
