@@ -1032,7 +1032,7 @@ enum SettingsOpener {
         let window = NSWindow(contentViewController: host)
         window.title = "Pinchpad 设置"
         window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 580, height: 680))
+        window.setContentSize(SettingsView.windowSize)
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         return window

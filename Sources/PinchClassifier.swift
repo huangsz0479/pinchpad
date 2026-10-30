@@ -73,7 +73,11 @@ struct PinchClassifier {
     private(set) var peak = 0
     private(set) var signal: PinchSignal?
     private(set) var resetGeneration: UInt = 0
-    let sensitivity: PinchSensitivity
+    let threeFingerSensitivity: PinchSensitivity
+    let fourFingerSensitivity: PinchSensitivity
+    // Peak count survives finger lift-off; a four-finger gesture must never
+    // switch to the three-finger threshold while its contacts are releasing.
+    var sensitivity: PinchSensitivity { peak >= 4 ? fourFingerSensitivity : threeFingerSensitivity }
     private var peakFrames = 0
     private var fired = false
     private var landing: [Int32: (x: Float, y: Float)] = [:]
@@ -84,13 +88,18 @@ struct PinchClassifier {
     private var multiContactBegan: TimeInterval?
     private var tailConfirmationUntil: TimeInterval?
 
-    init(sensitivity: PinchSensitivity = .standard) {
-        self.sensitivity = sensitivity
+    init(threeFingerSensitivity: PinchSensitivity = .standard, fourFingerSensitivity: PinchSensitivity = .standard) {
+        self.threeFingerSensitivity = threeFingerSensitivity
+        self.fourFingerSensitivity = fourFingerSensitivity
+    }
+
+    init(sensitivity: PinchSensitivity) {
+        self.init(threeFingerSensitivity: sensitivity, fourFingerSensitivity: sensitivity)
     }
 
     mutating func reset() {
         let generation = resetGeneration &+ 1
-        self = PinchClassifier(sensitivity: sensitivity)
+        self = PinchClassifier(threeFingerSensitivity: threeFingerSensitivity, fourFingerSensitivity: fourFingerSensitivity)
         resetGeneration = generation
     }
 

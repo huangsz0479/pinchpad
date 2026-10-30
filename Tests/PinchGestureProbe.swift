@@ -35,6 +35,7 @@ struct PinchGestureProbe {
         try sensitivityLevels()
         try sensitivityPreferences()
         try liveSensitivity()
+        try independentSensitivities()
         for sensitivity in PinchSensitivity.allCases {
             try systemGesturePassThrough(sensitivity: sensitivity)
         }
@@ -278,7 +279,7 @@ struct PinchGestureProbe {
     static func briefThreeFingerContraction() throws {
         for sensitivity in PinchSensitivity.allCases {
             let monitor = PinchMonitor()
-            monitor.setSensitivity(sensitivity)
+            monitor.setSensitivities(three: sensitivity, four: sensitivity)
             var openings = 0
             monitor.onOpen = { _ in openings += 1 }
             monitor.handle(samples: samples(fingers: 3, radius: 0.3))
@@ -333,19 +334,84 @@ struct PinchGestureProbe {
 
     static func sensitivityPreferences() throws {
         let decoder = JSONDecoder()
-        let legacy = try decoder.decode(Preferences.self, from: Data(#"{"columns":9,"pinchThree":false,"pinchFour":true}"#.utf8))
-        try require(legacy.pinchSensitivity == .standard && legacy.columns == 9 && !legacy.pinchThree && legacy.pinchFour,
-                    "Existing preferences must keep their values and receive standard sensitivity")
-        let unknown = try decoder.decode(Preferences.self, from: Data(#"{"columns":9,"pinchSensitivity":999}"#.utf8))
-        try require(unknown.pinchSensitivity == .standard && unknown.columns == 9,
-                    "Unknown sensitivity must not discard the user's preferences")
-        for sensitivity in PinchSensitivity.allCases {
-            var preferences = legacy
-            preferences.pinchSensitivity = sensitivity
-            let restored = try decoder.decode(Preferences.self, from: JSONEncoder().encode(preferences))
-            try require(restored == preferences, "Sensitivity is lost after saving and reopening")
+        func decode(_ json: String) throws -> Preferences {
+            try decoder.decode(Preferences.self, from: Data(json.utf8))
         }
-        print("PASS: sensitivity persistence, legacy settings and unknown-level fallback")
+        let legacy = try decode(#"{"columns":9,"pinchThree":false,"pinchFour":true}"#)
+        try require(legacy.pinchThreeSensitivity == .standard && legacy.pinchFourSensitivity == .standard
+                    && legacy.columns == 9 && !legacy.pinchThree && legacy.pinchFour,
+                    "Missing levels must default without losing existing preferences")
+        for level in PinchSensitivity.allCases {
+            let migrated = try decode("{\"pinchSensitivity\":\(level.rawValue)}")
+            try require(migrated.pinchThreeSensitivity == level && migrated.pinchFourSensitivity == level,
+                        "Shared sensitivity must migrate to both gestures")
+        }
+        let partial = try decode(#"{"pinchSensitivity":4,"pinchThreeSensitivity":1}"#)
+        try require(partial.pinchThreeSensitivity == .veryLow && partial.pinchFourSensitivity == .high,
+                    "New keys must take precedence; a missing key inherits the old setting")
+        let unknown = try decode(#"{"columns":9,"pinchThreeSensitivity":999,"pinchFourSensitivity":5}"#)
+        try require(unknown.pinchThreeSensitivity == .standard && unknown.pinchFourSensitivity == .veryHigh
+                    && unknown.columns == 9, "Unknown level must not discard other preferences")
+        let invalidLegacy = try decode(#"{"pinchSensitivity":999}"#)
+        try require(invalidLegacy.pinchThreeSensitivity == .standard && invalidLegacy.pinchFourSensitivity == .standard,
+                    "Invalid legacy levels must use standard")
+        for three in PinchSensitivity.allCases {
+            for four in PinchSensitivity.allCases {
+                var preferences = legacy
+                preferences.pinchThreeSensitivity = three
+                preferences.pinchFourSensitivity = four
+                let data = try JSONEncoder().encode(preferences)
+                let restored = try decoder.decode(Preferences.self, from: data)
+                try require(restored == preferences, "Independent levels are lost after saving and reopening")
+                let keys = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+                try require(keys["pinchSensitivity"] == nil, "Saving must not reintroduce an ambiguous shared level")
+            }
+        }
+        print("PASS: 25 independent sensitivity pairs, legacy migration, partial keys and invalid-level fallback")
+    }
+
+    static func independentSensitivities() throws {
+        let monitor = PinchMonitor()
+        var openings: [Int] = []
+        monitor.onOpen = { openings.append($0) }
+        var time = 0.0
+        // Exercise the actual monitor callback with opposite levels, then swap live.
+        for three in [PinchSensitivity.veryHigh, .veryLow] {
+            let four: PinchSensitivity = three == .veryHigh ? .veryLow : .veryHigh
+            monitor.setSensitivities(three: three, four: four)
+            for _ in 0..<2 {
+                for count in [3, 4] {
+                    openings.removeAll()
+                    monitor.handle(samples: samples(fingers: count, radius: 0.3), at: time)
+                    monitor.handle(samples: samples(fingers: count, radius: 0.3), at: time + 0.01)
+                    for frame in 0...30 {
+                        monitor.handle(samples: samples(fingers: count, radius: 0.265), at: time + 0.02 + Double(frame) / 120)
+                    }
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                    let level = count == 3 ? three : four
+                    try require(openings == (level == .veryHigh ? [count] : []),
+                                "Changing one finger count affects the other's threshold")
+                    monitor.handle(samples: [], at: time + 0.4)
+                    time += 1
+                }
+            }
+        }
+        // A late fourth finger changes the threshold before recognition; lifting
+        // it again must retain the four-finger level and routing.
+        var classifier = PinchClassifier(threeFingerSensitivity: .veryHigh, fourFingerSensitivity: .veryLow)
+        let four = samples(fingers: 4, radius: 0.3)
+        _ = classifier.feed(Array(four.prefix(3)), at: 0) { [3, 4].contains($0) }
+        _ = classifier.feed(four, at: 0.01) { [3, 4].contains($0) }
+        for frame in 0...20 {
+            let reduced = Array(samples(fingers: 4, radius: 0.265).prefix(frame < 5 ? 4 : 3))
+            let result = classifier.feed(reduced, at: 0.02 + Double(frame) / 120) { [3, 4].contains($0) }
+            try require(result == nil && classifier.sensitivity == .veryLow,
+                        "A four-finger gesture borrowed the three-finger threshold after contact changes")
+        }
+        classifier.reset()
+        try require(classifier.threeFingerSensitivity == .veryHigh && classifier.fourFingerSensitivity == .veryLow,
+                    "Reset lost independent sensitivity values")
+        print("PASS: independent live callbacks, rearming, fourth-finger landing and lift-off thresholds")
     }
 
     static func liveSensitivity() throws {
@@ -353,11 +419,11 @@ struct PinchGestureProbe {
             let monitor = PinchMonitor()
             var openings: [Int] = []
             monitor.onOpen = { openings.append($0) }
-            monitor.setSensitivity(.veryHigh)
+            monitor.setSensitivities(three: .veryHigh, four: .veryHigh)
             monitor.handle(samples: samples(fingers: fingers, radius: 0.3), at: 0)
             monitor.handle(samples: samples(fingers: fingers, radius: 0.3), at: 0.01)
             // Change the setting during a contact sequence, without installing any monitors.
-            monitor.setSensitivity(.veryLow)
+            monitor.setSensitivities(three: .veryLow, four: .veryLow)
             monitor.handle(samples: samples(fingers: fingers, radius: 0.3), at: 0.02)
             monitor.handle(samples: samples(fingers: fingers, radius: 0.3), at: 0.03)
             for frame in 0...30 {
@@ -377,7 +443,7 @@ struct PinchGestureProbe {
     static func systemGesturePassThrough(sensitivity: PinchSensitivity) throws {
         func preparedMonitor(expanding: Bool) -> PinchMonitor {
             let monitor = PinchMonitor()
-            monitor.setSensitivity(sensitivity)
+            monitor.setSensitivities(three: sensitivity, four: sensitivity)
             func samples(radius: Float) -> [TouchSample] {
                 (0..<4).map { index in
                     let angle = Float(index) * .pi / 2

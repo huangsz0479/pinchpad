@@ -37,9 +37,13 @@ final class AppModel: ObservableObject {
                 CornerMonitor.shared.apply(settings.hotCorner)
             }
             if settings.pinchThree != oldValue.pinchThree || settings.pinchFour != oldValue.pinchFour {
-                PinchMonitor.shared.apply(counts: settings.pinchCounts, sensitivity: settings.pinchSensitivity)
-            } else if settings.pinchSensitivity != oldValue.pinchSensitivity {
-                PinchMonitor.shared.setSensitivity(settings.pinchSensitivity)
+                PinchMonitor.shared.apply(counts: settings.pinchCounts,
+                                          threeSensitivity: settings.pinchThreeSensitivity,
+                                          fourSensitivity: settings.pinchFourSensitivity)
+            } else if settings.pinchThreeSensitivity != oldValue.pinchThreeSensitivity
+                        || settings.pinchFourSensitivity != oldValue.pinchFourSensitivity {
+                PinchMonitor.shared.setSensitivities(three: settings.pinchThreeSensitivity,
+                                                    four: settings.pinchFourSensitivity)
             }
             if settings.showMenuBar != oldValue.showMenuBar {
                 AppDelegate.current?.refreshTray()
@@ -1715,7 +1719,9 @@ final class AppModel: ObservableObject {
         let failures = [registerHotKey(), registerTerminalHotKey()].compactMap { $0 }
         notice = failures.isEmpty ? nil : failures.joined(separator: " ")
         CornerMonitor.shared.apply(settings.hotCorner)
-        PinchMonitor.shared.apply(counts: settings.pinchCounts, sensitivity: settings.pinchSensitivity)
+        PinchMonitor.shared.apply(counts: settings.pinchCounts,
+                                  threeSensitivity: settings.pinchThreeSensitivity,
+                                  fourSensitivity: settings.pinchFourSensitivity)
         keepOutOfDock()
     }
 

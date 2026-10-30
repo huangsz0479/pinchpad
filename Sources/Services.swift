@@ -626,10 +626,10 @@ final class PinchMonitor {
         tapRunLoop?.stop()
     }
 
-    func apply(counts: Set<Int>, sensitivity: PinchSensitivity = .standard) {
+    func apply(counts: Set<Int>, threeSensitivity: PinchSensitivity = .standard, fourSensitivity: PinchSensitivity = .standard) {
         stateLock.lock()
         openCounts = counts
-        classifier = PinchClassifier(sensitivity: sensitivity)
+        classifier = PinchClassifier(threeFingerSensitivity: threeSensitivity, fourFingerSensitivity: fourSensitivity)
         activeDeviceID = nil
         activeDeviceLastFrameAt = nil
         swallowingDock = nil
@@ -647,11 +647,11 @@ final class PinchMonitor {
     }
 
     /// 更新识别门槛即可，无需重启设备监听或重新请求辅助功能授权。
-    func setSensitivity(_ sensitivity: PinchSensitivity) {
+    func setSensitivities(three: PinchSensitivity, four: PinchSensitivity) {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard classifier.sensitivity != sensitivity else { return }
-        classifier = PinchClassifier(sensitivity: sensitivity)
+        guard classifier.threeFingerSensitivity != three || classifier.fourFingerSensitivity != four else { return }
+        classifier = PinchClassifier(threeFingerSensitivity: three, fourFingerSensitivity: four)
         activeDeviceID = nil
         activeDeviceLastFrameAt = nil
         swallowingDock = nil

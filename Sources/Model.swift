@@ -101,6 +101,10 @@ struct ReorganizeOptions: Codable, Hashable {
     var sortInsideFolders: Bool = true
 }
 
+
+
+
+
 struct Preferences: Codable, Equatable {
     var columns: Int = 7
     var rows: Int = 5
@@ -111,7 +115,8 @@ struct Preferences: Codable, Equatable {
     var hotCorner: HotCorner = .off
     var pinchThree: Bool = true
     var pinchFour: Bool = true
-    var pinchSensitivity: PinchSensitivity = .standard
+    var pinchThreeSensitivity: PinchSensitivity = .standard
+    var pinchFourSensitivity: PinchSensitivity = .standard
     /// 是否启用全局快捷键。名字沿用最初的字段，避免旧的设置文件读不出来。
     var f4Enabled: Bool = true
     /// F4，不带修饰键。
@@ -141,7 +146,7 @@ struct Preferences: Codable, Equatable {
         case columns, rows, browsing, showMenuBar, showDockIcon, hideDockWhileOpen
         case hotCorner, pinchToOpen, pinchFingers, pinchThree, pinchFour, f4Enabled, hotKeyCode, hotKeyModifiers
         case terminalHotKeyEnabled, terminalHotKeyCode, terminalHotKeyModifiers, terminalDirectory, terminalAppPath
-        case pinchSensitivity
+        case pinchSensitivity, pinchThreeSensitivity, pinchFourSensitivity
         case showOn, returnToFirstPage, sortBy, sortAscending, hideNames
         case showHiddenInSearch, optionClickUninstall, backdrop, sources, launchAtLogin, reorganize
     }
@@ -166,9 +171,12 @@ struct Preferences: Codable, Equatable {
             pinchThree = legacyOpen
             pinchFour = legacyOpen
         }
-        if let level = try container.decodeIfPresent(Int.self, forKey: .pinchSensitivity) {
-            pinchSensitivity = PinchSensitivity(rawValue: level) ?? .standard
-        }
+        // Preserve the previous shared level for both gestures on first upgrade.
+        let legacySensitivity = try container.decodeIfPresent(Int.self, forKey: .pinchSensitivity)
+        let threeLevel = try container.decodeIfPresent(Int.self, forKey: .pinchThreeSensitivity) ?? legacySensitivity
+        let fourLevel = try container.decodeIfPresent(Int.self, forKey: .pinchFourSensitivity) ?? legacySensitivity
+        pinchThreeSensitivity = threeLevel.flatMap(PinchSensitivity.init(rawValue:)) ?? .standard
+        pinchFourSensitivity = fourLevel.flatMap(PinchSensitivity.init(rawValue:)) ?? .standard
         f4Enabled = try container.decodeIfPresent(Bool.self, forKey: .f4Enabled) ?? f4Enabled
         hotKeyCode = try container.decodeIfPresent(UInt32.self, forKey: .hotKeyCode) ?? hotKeyCode
         hotKeyModifiers = try container.decodeIfPresent(UInt32.self, forKey: .hotKeyModifiers) ?? hotKeyModifiers
@@ -201,7 +209,8 @@ struct Preferences: Codable, Equatable {
         try container.encode(hotCorner, forKey: .hotCorner)
         try container.encode(pinchThree, forKey: .pinchThree)
         try container.encode(pinchFour, forKey: .pinchFour)
-        try container.encode(pinchSensitivity, forKey: .pinchSensitivity)
+        try container.encode(pinchThreeSensitivity, forKey: .pinchThreeSensitivity)
+        try container.encode(pinchFourSensitivity, forKey: .pinchFourSensitivity)
         try container.encode(f4Enabled, forKey: .f4Enabled)
         try container.encode(hotKeyCode, forKey: .hotKeyCode)
         try container.encode(hotKeyModifiers, forKey: .hotKeyModifiers)
@@ -222,6 +231,10 @@ struct Preferences: Codable, Equatable {
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(reorganize, forKey: .reorganize)
     }
+
+
+
+
 
     var pinchCounts: Set<Int> {
         var counts: Set<Int> = []
