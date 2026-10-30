@@ -118,15 +118,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func statusClicked(_ sender: Any?) {
-        // 先盖时间戳再 toggle：action 之后的几百 ms 里可能还有积压的
-        // mouseDown 到达全局「点外部」监听，这个时间窗里的判定都算图标。
-        statusItemDownAt = Date()
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             popTrayMenu()
-            return
+        } else {
+            openSettingsFromTray()
         }
-        toggleTray()
     }
 
     private func popTrayMenu() {
@@ -316,11 +313,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func openFromTray() { AppModel.shared.open() }
-    @objc private func openSettingsFromTray() { SettingsOpener.open() }
+    @objc private func openSettingsFromTray() {
+        dismissTray(animated: false)
+        AppModel.shared.close(animated: false)
+        SettingsOpener.open()
+    }
     @objc private func quitFromTray() { NSApp.terminate(nil) }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        AppModel.shared.open()
+        openSettingsFromTray()
         return true
     }
 
