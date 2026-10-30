@@ -188,6 +188,7 @@ final class AppDelegate {
     static var current: AppDelegate?
     var alertParentWindow: NSWindow? { nil }
     func refreshTray() {}
+    func handleClotheslineShortcut(_ code: UInt32, modifiers: UInt32) -> Bool { false }
     func openClotheslineFromPinch() {}
     func dismissCompanionPanels() {}
     func dismissTray() {}

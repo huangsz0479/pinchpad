@@ -165,7 +165,7 @@ with tempfile.TemporaryDirectory(prefix='pinchpad-settings-') as tmp:
         '@State private var selectedTab:', '@State var selectedTab:')
     (tmp / 'SettingsView.swift').write_text(settings)
     (tmp / 'Probe.swift').write_text(harness)
-    sources = ['Model', 'PinchClassifier', 'ClotheslinePreferences', 'ClotheslineLayout', 'SettingsPagination', 'SettingsControls',
+    sources = ['Model', 'PinchClassifier', 'ClotheslinePreferences', 'ClotheslineLayout', 'CardKeyEditor', 'SettingsPagination', 'SettingsControls',
                'GestureSettingsView', 'PanelSettingsView', 'ApplicationSettingsView', 'TrayGridLayout', 'TrayView']
     binary = tmp / 'probe'
     subprocess.run(['swiftc', '-swift-version', '5', '-parse-as-library', '-module-cache-path',

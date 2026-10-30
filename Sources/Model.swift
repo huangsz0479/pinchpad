@@ -170,10 +170,11 @@ struct Preferences: Codable, Equatable {
     var launchAtLogin: Bool = false
     var reorganize: ReorganizeOptions = ReorganizeOptions()
     var trayAppSizes: [String: TrayAppSize] = [:]
+    var cardNavigation = CardNavigationShortcuts()
     var clotheslinePositions: [String: ClotheslinePosition] = [:]
 
     private enum CodingKeys: String, CodingKey {
-        case clotheslinePositions
+        case cardNavigation, clotheslinePositions
         case columns, rows, browsing, showMenuBar, showDockIcon, hideDockWhileOpen
         case hotCorner, pinchToOpen, pinchFingers, pinchThree, pinchFour, f4Enabled, hotKeyCode, hotKeyModifiers
         case terminalHotKeyEnabled, terminalHotKeyCode, terminalHotKeyModifiers, terminalDirectory, terminalAppPath
@@ -187,6 +188,7 @@ struct Preferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init()
+        cardNavigation = (try? container.decode(CardNavigationShortcuts.self, forKey: .cardNavigation)) ?? .init()
         clotheslinePositions = ((try? container.decode([String: ClotheslinePosition].self, forKey: .clotheslinePositions)) ?? [:])
             .filter { $0.value.isValid }
         columns = try container.decodeIfPresent(Int.self, forKey: .columns) ?? columns
@@ -234,6 +236,7 @@ struct Preferences: Codable, Equatable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(cardNavigation, forKey: .cardNavigation)
         try container.encode(clotheslinePositions, forKey: .clotheslinePositions)
         try container.encode(columns, forKey: .columns)
         try container.encode(rows, forKey: .rows)

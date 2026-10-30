@@ -94,6 +94,7 @@ struct HotKeyEditor: View {
     var label: String
     var onRecord: (UInt32, UInt32) -> Void
     @State private var recording = false
+    @State private var identity = UUID()
     @State private var monitor: Any?
 
     var body: some View {
@@ -107,10 +108,13 @@ struct HotKeyEditor: View {
             }
         }
         .onDisappear { stop() }
-
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PinchpadShortcutRecordingBegan"))) { notification in
+            if notification.object as? UUID != identity { stop() }
+        }
     }
 
     private func begin() {
+        NotificationCenter.default.post(name: Notification.Name("PinchpadShortcutRecordingBegan"), object: identity)
         recording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 {

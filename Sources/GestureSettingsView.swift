@@ -81,6 +81,17 @@ struct ShortcutSettingsPage: View {
                 }
                 .frame(minHeight: 30)
             }
+            SettingsCard(title: "三指捏合 · App 卡片切换") {
+                CardKeyEditor(title: "下一张", code: model.settings.cardNavigation.next) { code in
+                    model.settings.cardNavigation.set(code, for: .next)
+                }
+                Divider()
+                CardKeyEditor(title: "上一张", code: model.settings.cardNavigation.previous) { code in
+                    model.settings.cardNavigation.set(code, for: .previous)
+                }
+                Text("切换会循环；前后按键重复时自动交换。支持单键，不含 fn、Control、Option、Command 和关机键。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             SettingsCard(title: "屏幕热角") {
                 SettingsRow(title: "将指针移入角落呼出") {
                     Picker("屏幕热角", selection: $model.settings.hotCorner) {

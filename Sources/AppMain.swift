@@ -148,7 +148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         clothesline.dismiss()
     }
 
-
+    func handleClotheslineShortcut(_ code: UInt32, modifiers: UInt32) -> Bool {
+        clothesline.handleShortcut(code, modifiers: modifiers)
+    }
 
     @objc private func openFromTray() { AppModel.shared.open() }
     @objc private func openSettingsFromTray() {

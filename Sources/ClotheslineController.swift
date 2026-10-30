@@ -355,7 +355,7 @@ final class ClotheslineController: NSObject {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .systemDefined, .leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown]) { [weak self] event in
             guard let self, self.isShown, self.menus.isEmpty else { return event }
             if event.type == .keyDown || event.type == .flagsChanged || event.type == .systemDefined {
-                if event.type == .keyDown, self.handleKey(event.keyCode) { return nil }
+                if let code = CardNavigationShortcuts.code(from: event), self.handleKey(code) { return nil }
                 return event
             }
             if self.handlePointer(event) { return nil }
@@ -368,7 +368,7 @@ final class ClotheslineController: NSObject {
             DispatchQueue.main.async {
                 guard let self, self.isShown, self.menus.isEmpty else { return }
                 if event.type == .keyDown || event.type == .flagsChanged || event.type == .systemDefined {
-                    if event.type == .keyDown { _ = self.handleKey(event.keyCode) }
+                    if let code = CardNavigationShortcuts.code(from: event) { _ = self.handleKey(code) }
                 } else { self.dismissFromPointer() }
             }
         }
@@ -423,12 +423,23 @@ final class ClotheslineController: NSObject {
         pointerReadyAt = Date().addingTimeInterval(0.15)
     }
 
+    /// Carbon may consume a configured F-key before NSEvent sees it. Give local
+    /// card navigation precedence over Pinchpad's own global shortcuts.
+    func handleShortcut(_ code: UInt32, modifiers: UInt32) -> Bool {
+        guard isShown, modifiers == 0, code <= UInt16.max,
+              model.settings.cardNavigation.direction(for: UInt16(code)) != nil else { return false }
+        return handleKey(UInt16(code))
+    }
+
     private func handleKey(_ key: UInt16) -> Bool {
         guard pendingPointer == nil else {
             if key == 53 { finishPointer(); dismiss() }
             return true
         }
-        if key == 48 { selectApp(); return true }
+        if let direction = model.settings.cardNavigation.direction(for: key) {
+            selectApp(direction)
+            return true
+        }
         switch key {
         case 53: dismiss()
         case 49: openSelectedApp()
@@ -439,14 +450,13 @@ final class ClotheslineController: NSObject {
         return true
     }
 
-    private func selectApp() {
+    private func selectApp(_ direction: CardNavigationShortcuts.Direction) {
         guard isShown, menus.isEmpty else { return }
         let layout = presentation.content.layout
         let cards = layout.pages.flatMap { $0 }
         let current = presentation.selectedID.flatMap { id in cards.firstIndex { $0.id == id } }
         let start = layout.pages.prefix(session.page).reduce(0) { $0 + $1.count }
-        guard !cards.isEmpty else { return }
-        let index = ((current ?? (start - 1)) + 1) % cards.count
+        guard let index = CardNavigationShortcuts.index(current: current, count: cards.count, direction: direction, pageStart: start) else { return }
         let next = cards[index]
         let page = layout.pages.firstIndex { $0.contains { $0.id == next.id } } ?? 0
         if page != presentation.content.page || pageTransition != nil {

@@ -98,9 +98,29 @@ import CoreGraphics
         for sample in samples.dropFirst() {
             require(zip(samples[0], sample).allSatisfy { distance($0, $1) < 0.001 }, "Refresh rate changes physics")
         }
+        var keys = CardNavigationShortcuts()
+        require(keys.next == 48 && keys.previous == 50, "Wrong default navigation keys")
+        for code: UInt16 in [54, 55, 58, 59, 61, 62, 63, 127, 262] {
+            require(!CardNavigationShortcuts.accepts(code), "Forbidden key accepted")
+        }
+        for code: UInt16 in [0, 36, 48, 49, 50, 51, 53, 56, 57, 60, 76, 96, 118, 122, 123, 126, 256, 272] {
+            keys.set(code, for: .next)
+            require(keys.next == code && keys.next != keys.previous, "Cannot assign allowed key")
+        }
+        let oldNext = keys.next
+        keys.set(keys.previous, for: .next)
+        require(keys.previous == oldNext, "Conflict does not swap keys")
+        let data = try JSONEncoder().encode(keys)
+        let decodedKeys = try JSONDecoder().decode(CardNavigationShortcuts.self, from: data)
+        require(decodedKeys == keys, "Keys did not persist")
+        require(CardNavigationShortcuts.index(current: 0, count: 9, direction: .previous) == 8, "Reverse wrap fails")
+        require(CardNavigationShortcuts.index(current: 8, count: 9, direction: .next) == 0, "Forward wrap fails")
+        require(CardNavigationShortcuts.index(current: nil, count: 9, direction: .previous) == 8, "Initial reverse selection fails")
+        require(CardNavigationShortcuts.index(current: nil, count: 0, direction: .next) == nil, "Empty navigation fails")
         durations.sort()
         print("PASS: \(scenes) live simulations; free X/Y placement, persistence, cable conservation, break/recoil/retie, repeated drag, sleep, 30/60/120 Hz equivalence")
         print(String(format: "Physics + frame p95 %.3f ms, p99 %.3f ms, max %.3f ms; max cable error %.4f pt", durations[Int(Double(durations.count) * 0.95)] * 1000,
                      durations[Int(Double(durations.count) * 0.99)] * 1000, durations.last! * 1000, largestLengthError))
+        print("PASS: default/custom/forbidden/conflicting keys, persistence and cyclic forward/reverse navigation")
     }
 }

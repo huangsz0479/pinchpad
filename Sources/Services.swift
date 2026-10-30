@@ -290,8 +290,15 @@ final class HotKeyCenter {
     private var handlers: [UInt32: () -> Void] = [:]
     private var hotKeys: [UInt32: EventHotKeyRef] = [:]
     private var installed = false
+    private var registeredKeys: [UInt32: (code: UInt32, modifiers: UInt32)] = [:]
+    var recordCardKey: ((UInt16) -> Void)?
 
     func handle(_ id: UInt32) {
+        if let recordCardKey {
+            if let key = registeredKeys[id], key.modifiers == 0, key.code <= UInt16.max,
+               CardNavigationShortcuts.accepts(UInt16(key.code)) { recordCardKey(UInt16(key.code)) }
+            return
+        }
         handlers[id]?()
     }
 
@@ -307,6 +314,7 @@ final class HotKeyCenter {
             hotKeys[id] = nil
         }
         handlers[id] = onPress
+        registeredKeys[id] = (keyCode, modifiers)
         guard enabled else { return nil }
         var hotKey: EventHotKeyRef?
         let identity = EventHotKeyID(signature: 0x4750_4144, id: id)

@@ -416,7 +416,12 @@ final class AppModel: ObservableObject {
             enabled: settings.f4Enabled,
             keyCode: settings.hotKeyCode,
             modifiers: settings.hotKeyModifiers
-        ) { AppModel.shared.toggle() }
+        ) {
+            let model = AppModel.shared
+            if AppDelegate.current?.handleClotheslineShortcut(model.settings.hotKeyCode, modifiers: model.settings.hotKeyModifiers) != true {
+                model.toggle()
+            }
+        }
     }
 
     func registerTerminalHotKey() -> String? {
@@ -425,7 +430,12 @@ final class AppModel: ObservableObject {
             enabled: settings.terminalHotKeyEnabled,
             keyCode: settings.terminalHotKeyCode,
             modifiers: settings.terminalHotKeyModifiers
-        ) { AppModel.shared.openTerminal() }
+        ) {
+            let model = AppModel.shared
+            if AppDelegate.current?.handleClotheslineShortcut(model.settings.terminalHotKeyCode, modifiers: model.settings.terminalHotKeyModifiers) != true {
+                model.openTerminal()
+            }
+        }
     }
 
     // MARK: - 终端快捷键
