@@ -67,7 +67,13 @@ import AppKit
     }
 }
 
+@MainActor final class CompanionSurface {
+    var isShown = true
+    func dismiss(animated: Bool = true) { isShown = false }
+}
+
 @MainActor final class Lifecycle {
+    let clothesline = CompanionSurface()
     var panel: ProbePanel? = ProbePanel()
     var auroraView: NSView?
     var visibilityToken = 0
@@ -115,6 +121,7 @@ import AppKit
                 "Immediate dismissal skipped cleanup or the next icon wave preparation")
 
         driver.change(open: true)
+        require(!driver.clothesline.isShown, "Opening the full launcher must dismiss the clothesline")
         let revealToken = driver.visibilityToken
         driver.change(open: true)
         require(driver.visibilityToken == revealToken,

@@ -467,7 +467,7 @@ final class AppModel: ObservableObject {
         }
         let appURL = URL(fileURLWithPath: resolvedTerminalAppPath)
         close()
-        AppDelegate.current?.dismissTray()
+        AppDelegate.current?.dismissCompanionPanels()
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         NSWorkspace.shared.open(
@@ -916,6 +916,22 @@ final class AppModel: ObservableObject {
 
     func isPinned(_ app: AppItem) -> Bool {
         pinnedAppIDs.contains(app.id)
+    }
+
+    func traySize(for app: AppItem) -> TrayAppSize {
+        settings.traySize(bundleID: app.bundleID, path: app.path)
+    }
+
+    func traySize(for app: RunningApp) -> TrayAppSize {
+        settings.traySize(bundleID: app.bundleID, path: app.application.bundleURL?.path)
+    }
+
+    func setTraySize(_ size: TrayAppSize, for app: AppItem) {
+        settings.setTraySize(size, bundleID: app.bundleID, path: app.path)
+    }
+
+    func setTraySize(_ size: TrayAppSize, for app: RunningApp) {
+        settings.setTraySize(size, bundleID: app.bundleID, path: app.application.bundleURL?.path)
     }
 
     func togglePin(_ app: AppItem) {
@@ -1700,8 +1716,8 @@ final class AppModel: ObservableObject {
     private func wireMonitors() {
         CornerMonitor.shared.onFire = { AppModel.shared.toggle() }
         PinchMonitor.shared.bindPanels(
-            openTray: { AppDelegate.current?.openTrayFromPinch() },
-            closeTray: { AppDelegate.current?.dismissTray() },
+            openTray: { AppDelegate.current?.openClotheslineFromPinch() },
+            closeTray: { AppDelegate.current?.dismissCompanionPanels() },
             openLauncher: { AppModel.shared.openFromPinch() },
             closeLauncher: { AppModel.shared.close() }
         )
@@ -1756,6 +1772,7 @@ struct RunningApp: Identifiable, Equatable {
     var id: String {
         "\(application.bundleIdentifier ?? "app")-\(application.processIdentifier)"
     }
+    var placementKey: String { application.bundleIdentifier ?? application.bundleURL?.path ?? id }
     var name: String { application.localizedName ?? "应用" }
     var icon: NSImage? { application.icon }
     var bundleID: String? { application.bundleIdentifier }

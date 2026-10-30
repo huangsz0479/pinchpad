@@ -188,7 +188,8 @@ final class AppDelegate {
     static var current: AppDelegate?
     var alertParentWindow: NSWindow? { nil }
     func refreshTray() {}
-    func openTrayFromPinch() {}
+    func openClotheslineFromPinch() {}
+    func dismissCompanionPanels() {}
     func dismissTray() {}
 }
 
@@ -520,7 +521,7 @@ with tempfile.TemporaryDirectory(prefix="pinchpad-opening-performance-") as dire
     probe.write_text(harness)
     binary = directory / "probe"
     sources = [root / "Sources" / name for name in (
-        "Model.swift", "PinchClassifier.swift", "Services.swift", "PanelAlertPresenter.swift", "IconEntrance.swift", "PagingMotion.swift",
+        "Model.swift", "ClotheslinePreferences.swift", "PinchClassifier.swift", "Services.swift", "PanelAlertPresenter.swift", "IconEntrance.swift", "PagingMotion.swift",
     )]
     sources += sorted((root / "Sources").glob("AppLibrary*.swift"))
     sources += sorted((root / "Sources").glob("EntranceMotion.swift"))

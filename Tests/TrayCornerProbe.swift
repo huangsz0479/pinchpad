@@ -41,7 +41,13 @@ for (name, x, y) in [
         fatalError("Nontransparent pixels outside the rounded \(name) corner")
     }
 }
-guard bitmap.colorAt(x: w / 2, y: h / 2)!.alphaComponent > 0.5 else {
+// The center now lies in the transparent gap between independent controls.
+let hasContent = stride(from: 2, to: h - 2, by: max(1, h / 40)).contains { y in
+    stride(from: 2, to: w - 2, by: max(1, w / 40)).contains { x in
+        bitmap.colorAt(x: x, y: y)!.alphaComponent > 0.5
+    }
+}
+guard hasContent else {
     fatalError("Window is empty; cannot validate its corners")
 }
 print("PASS: all four outer corners are transparent")

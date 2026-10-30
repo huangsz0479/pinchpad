@@ -101,9 +101,37 @@ struct ReorganizeOptions: Codable, Hashable {
     var sortInsideFolders: Bool = true
 }
 
+enum TrayAppSize: String, Codable, CaseIterable, Identifiable {
+    case small, medium, large
 
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .small: return "小"
+        case .medium: return "中"
+        case .large: return "大"
+        }
+    }
+    var columns: Int { self == .small ? 1 : 2 }
+    var rows: Int { self == .large ? 2 : 1 }
 
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        // A future or malformed individual size must not discard the app library.
+        self = (try? value.decode(String.self)).flatMap(Self.init(rawValue:)) ?? .medium
+    }
+}
 
+/// Shared by catalog entries and running menu-bar apps; process IDs never persist.
+enum TrayAppIdentity {
+    static func key(bundleID: String?, path: String?) -> String? {
+        if let bundleID = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines), !bundleID.isEmpty {
+            return "bundle:\(bundleID)"
+        }
+        guard let path, !path.isEmpty else { return nil }
+        return "path:\(URL(fileURLWithPath: path).standardizedFileURL.path)"
+    }
+}
 
 struct Preferences: Codable, Equatable {
     var columns: Int = 7
@@ -141,14 +169,17 @@ struct Preferences: Codable, Equatable {
     var sources: [AppSource] = AppSource.defaults
     var launchAtLogin: Bool = false
     var reorganize: ReorganizeOptions = ReorganizeOptions()
+    var trayAppSizes: [String: TrayAppSize] = [:]
+    var clotheslinePositions: [String: ClotheslinePosition] = [:]
 
     private enum CodingKeys: String, CodingKey {
+        case clotheslinePositions
         case columns, rows, browsing, showMenuBar, showDockIcon, hideDockWhileOpen
         case hotCorner, pinchToOpen, pinchFingers, pinchThree, pinchFour, f4Enabled, hotKeyCode, hotKeyModifiers
         case terminalHotKeyEnabled, terminalHotKeyCode, terminalHotKeyModifiers, terminalDirectory, terminalAppPath
         case pinchSensitivity, pinchThreeSensitivity, pinchFourSensitivity
         case showOn, returnToFirstPage, sortBy, sortAscending, hideNames
-        case showHiddenInSearch, optionClickUninstall, backdrop, sources, launchAtLogin, reorganize
+        case showHiddenInSearch, optionClickUninstall, backdrop, sources, launchAtLogin, reorganize, trayAppSizes
     }
 
     init() {}
@@ -156,6 +187,8 @@ struct Preferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init()
+        clotheslinePositions = ((try? container.decode([String: ClotheslinePosition].self, forKey: .clotheslinePositions)) ?? [:])
+            .filter { $0.value.isValid }
         columns = try container.decodeIfPresent(Int.self, forKey: .columns) ?? columns
         rows = try container.decodeIfPresent(Int.self, forKey: .rows) ?? rows
         browsing = try container.decodeIfPresent(Browsing.self, forKey: .browsing) ?? browsing
@@ -196,10 +229,12 @@ struct Preferences: Codable, Equatable {
         sources = try container.decodeIfPresent([AppSource].self, forKey: .sources) ?? sources
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? launchAtLogin
         reorganize = try container.decodeIfPresent(ReorganizeOptions.self, forKey: .reorganize) ?? reorganize
+        trayAppSizes = (try? container.decodeIfPresent([String: TrayAppSize].self, forKey: .trayAppSizes)) ?? [:]
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(clotheslinePositions, forKey: .clotheslinePositions)
         try container.encode(columns, forKey: .columns)
         try container.encode(rows, forKey: .rows)
         try container.encode(browsing, forKey: .browsing)
@@ -230,11 +265,22 @@ struct Preferences: Codable, Equatable {
         try container.encode(sources, forKey: .sources)
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(reorganize, forKey: .reorganize)
+        try container.encode(trayAppSizes, forKey: .trayAppSizes)
     }
 
+    func traySize(bundleID: String?, path: String?) -> TrayAppSize {
+        guard let key = TrayAppIdentity.key(bundleID: bundleID, path: path) else { return .medium }
+        return trayAppSizes[key] ?? .medium
+    }
 
-
-
+    mutating func setTraySize(_ size: TrayAppSize, bundleID: String?, path: String?) {
+        guard let key = TrayAppIdentity.key(bundleID: bundleID, path: path) else { return }
+        if size == .medium {
+            trayAppSizes.removeValue(forKey: key)
+        } else {
+            trayAppSizes[key] = size
+        }
+    }
 
     var pinchCounts: Set<Int> {
         var counts: Set<Int> = []

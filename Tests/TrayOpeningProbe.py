@@ -104,6 +104,7 @@ struct RunningApp {
 @MainActor struct RunningCell {
     var app: RunningApp
     var onClose: () -> Void
+    var canOpen: () -> Bool = { true }
 ''' + open_running + r'''
     func probeOpen() { openApplication() }
 }
@@ -235,6 +236,9 @@ final class AppDelegate {
     func installTrayMonitor() { monitorCount = 1 }
     func removeTrayMonitor() { monitorCount = 0 }
     func layoutTray() {}
+    var revealActive = false
+    func animateTrayReveal() { revealActive = true }
+    func resetTrayReveal() { revealActive = false }
 ''' + delegate_methods + r'''
     func probeOpen() { showTray() }
 }
@@ -273,6 +277,7 @@ struct TrayOpeningProbe {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) {
             heartbeatAt = ProcessInfo.processInfo.systemUptime
         }
+        delegate.statusItem = nil
         delegate.probeOpen()
         let returned = ProcessInfo.processInfo.systemUptime
         let ordered = delegate.trayPanel?.orderedAt.first ?? returned
@@ -284,6 +289,7 @@ struct TrayOpeningProbe {
         require(returnMS < 40, "Menu-bar discovery blocks the main thread (\(Int(returnMS)) ms; limit 40 ms)")
         require(delegate.trayShown && delegate.trayPanel?.isVisible == true && delegate.monitorCount == 1,
                 "Opening does not reveal the organizer and install its dismissal monitor")
+        require(delegate.revealActive, "Ordinary opening must animate the retained glass surface")
         require(wait(0.04) { heartbeatAt != nil }, "Main-thread heartbeat stalls behind menu discovery")
         let heartbeatMS = ((heartbeatAt ?? ProcessInfo.processInfo.systemUptime) - started) * 1_000
         print(String(format: "main-thread heartbeat during discovery: %.2f ms", heartbeatMS))
@@ -303,6 +309,7 @@ struct TrayOpeningProbe {
         delegate.dismissTray()
         require(wait(0.1) { !delegate.trayShown && delegate.trayPanel?.isVisible == false && delegate.monitorCount == 0 },
                 "Dismissal leaves the organizer or its monitor active")
+        require(!delegate.revealActive, "Dismissal leaves an unfinished reveal transform attached")
         print("PASS: organizer reveals and main-thread heartbeat runs before delayed discovery finishes")
 
         // Eligible cached entries stay usable until a new menu snapshot is ready.
@@ -398,6 +405,7 @@ struct TrayOpeningProbe {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
         require(delegate.trayShown && delegate.trayPanel?.isVisible == true && delegate.monitorCount == 1,
                 "Stale close completion hides the reopened organizer or removes its monitor")
+        require(!delegate.revealActive, "Reduce Motion reopening must not retain the earlier scale animation")
         require(wait { !model.probeIsRefreshing && ids() == [2] },
                 "Close/reopen loses the pending latest menu refresh")
         require(delegate.trayShown && delegate.trayPanel?.isVisible == true,

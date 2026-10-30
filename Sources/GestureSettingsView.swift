@@ -5,11 +5,11 @@ struct GestureSettingsPage: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            PinchSettingsCard(title: "三指捏合", destination: "展开菜单栏应用", symbol: "menubar.rectangle",
+            PinchSettingsCard(title: "三指捏合", destination: "展开菜单栏应用晾衣绳", symbol: "menubar.rectangle",
                               enabled: $model.settings.pinchThree, sensitivity: $model.settings.pinchThreeSensitivity)
             PinchSettingsCard(title: "四指捏合", destination: "打开应用启动面板", symbol: "square.grid.3x3",
                               enabled: $model.settings.pinchFour, sensitivity: $model.settings.pinchFourSensitivity)
-            SettingsHint(text: "三指展开菜单栏应用。灵敏度越高，所需收拢幅度越小。四指张开仍保留系统「显示桌面」功能。")
+            SettingsHint(text: "三指将菜单栏应用挂在全屏晾衣绳上，轻晃后停稳；拖动卡片可自由摆放，松手重新系绳。点击菜单栏图标打开设置。灵敏度越高，所需收拢幅度越小。四指张开仍保留系统「显示桌面」功能。")
         }
     }
 }

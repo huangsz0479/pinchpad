@@ -27,15 +27,15 @@ guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: 
 let menuBottom = min(screen.visibleFrame.maxY,
                      screen.frame.maxY - max(NSStatusBar.system.thickness, screen.safeAreaInsets.top))
 let gap = menuBottom - frame.maxY
-let expectedGap = 2 / screen.backingScaleFactor
-let expectedWidth = min(460, max(1, screen.visibleFrame.width - 12))
+let expectedGap: CGFloat = 8
+let expectedWidth = min(360, max(1, screen.visibleFrame.width - 24))
 let bottomGap = frame.minY - screen.visibleFrame.minY
-let expectedBottomGap = 6 + 200 / screen.backingScaleFactor
 let level = (tray[kCGWindowLayer as String] as? Int) ?? Int.max
 print("menu-bar gap: \(gap)pt; bottom gap: \(bottomGap)pt; width: \(width)pt; tray level: \(level)")
-guard abs(gap - expectedGap) < 0.01, abs(bottomGap - expectedBottomGap) < 0.01,
-      abs(width - expectedWidth) < 0.01, level < NSWindow.Level.mainMenu.rawValue else {
-    fputs("FAIL: tray must be 460pt wide (or fit the screen), start 2 pixels below the menu bar, and end 6pt plus 200 screen pixels above the usable screen bottom\n", stderr)
+guard abs(gap - expectedGap) < 0.01, bottomGap >= 12 - 0.01,
+      abs(width - expectedWidth) < 0.01, height <= 600,
+      level < NSWindow.Level.mainMenu.rawValue else {
+    fputs("FAIL: compact tray must be 360pt wide (or fit the screen), start 8pt below the menu bar, remain at most 600pt high, and keep 12pt above the usable screen bottom\n", stderr)
     exit(1)
 }
-print("PASS: wider tray fits the usable screen height without covering the menu bar or Dock")
+print("PASS: compact tray stays within the usable screen without covering the menu bar or Dock")

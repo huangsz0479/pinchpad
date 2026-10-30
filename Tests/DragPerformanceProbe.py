@@ -270,7 +270,7 @@ with tempfile.TemporaryDirectory(prefix='pinchpad-drag-performance-') as directo
     (directory / 'AppModel.swift').write_text(model)
     (directory / 'PinchpadView.swift').write_text(view)
     (directory / 'Probe.swift').write_text(harness)
-    sources = ['Model.swift', 'PinchClassifier.swift', 'Services.swift', 'PanelAlertPresenter.swift',
+    sources = ['Model.swift', 'ClotheslinePreferences.swift', 'PinchClassifier.swift', 'Services.swift', 'PanelAlertPresenter.swift',
                'IconEntrance.swift', 'AppLibraryMonitor.swift', 'PagingMotion.swift', 'EntranceMotion.swift']
     for source in sources:
         (directory / source).write_text((root / 'Sources' / source).read_text())
